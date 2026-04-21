@@ -44,18 +44,29 @@ _NODE_TABLES: list[str] = [
         qualified_name STRING,
         name STRING,
         decorators STRING[],
+        start_line INT64,
+        end_line INT64,
+        docstring STRING,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Function(
         qualified_name STRING,
         name STRING,
         decorators STRING[],
+        start_line INT64,
+        end_line INT64,
+        docstring STRING,
+        source_code STRING,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Method(
         qualified_name STRING,
         name STRING,
         decorators STRING[],
+        start_line INT64,
+        end_line INT64,
+        docstring STRING,
+        source_code STRING,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Interface(

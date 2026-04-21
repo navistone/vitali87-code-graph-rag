@@ -28,7 +28,7 @@ from codebase_rag.graph_updater import GraphUpdater
 from codebase_rag.language_spec import get_language_spec
 from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services import QueryProtocol
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 
 class CodeChangeEventHandler(FileSystemEventHandler):
@@ -112,19 +112,16 @@ class CodeChangeEventHandler(FileSystemEventHandler):
 
 
 def start_watcher(
-    repo_path: str, host: str, port: int, batch_size: int | None = None
+    repo_path: str, db_path: str, batch_size: int | None = None
 ) -> None:
     repo_path_obj = Path(repo_path).resolve()
     parsers, queries = load_parsers()
 
     effective_batch_size = settings.resolve_batch_size(batch_size)
 
-    with MemgraphIngestor(
-        host=host,
-        port=port,
+    with LadybugIngestor(
+        db_path=db_path,
         batch_size=effective_batch_size,
-        username=settings.MEMGRAPH_USERNAME,
-        password=settings.MEMGRAPH_PASSWORD,
     ) as ingestor:
         _run_watcher_loop(ingestor, repo_path_obj, parsers, queries)
 
@@ -161,12 +158,9 @@ def _validate_positive_int(value: int | None) -> int | None:
 
 def main(
     repo_path: Annotated[str, typer.Argument(help=ch.HELP_REPO_PATH_WATCH)],
-    host: Annotated[
-        str, typer.Option(help=ch.HELP_MEMGRAPH_HOST)
-    ] = settings.MEMGRAPH_HOST,
-    port: Annotated[
-        int, typer.Option(help=ch.HELP_MEMGRAPH_PORT)
-    ] = settings.MEMGRAPH_PORT,
+    db_path: Annotated[
+        str, typer.Option(help="Path to the LadybugDB database file.")
+    ] = settings.LADYBUG_DB_PATH,
     batch_size: Annotated[
         int | None,
         typer.Option(
@@ -178,7 +172,7 @@ def main(
     logger.remove()
     logger.add(sys.stdout, format=REALTIME_LOGGER_FORMAT, level=LOG_LEVEL_INFO)
     logger.info(logs.LOGGER_CONFIGURED)
-    start_watcher(repo_path, host, port, batch_size)
+    start_watcher(repo_path, db_path, batch_size)
 
 
 if __name__ == "__main__":
