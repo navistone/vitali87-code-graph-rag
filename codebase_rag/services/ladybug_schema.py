@@ -1,8 +1,28 @@
 """CI-3: LadybugDB schema migration (DEV-1171).
 
-Declares all node tables, relationship tables, and vector indexes
-that match the Code-Graph-RAG schema. Must be run once before any
-ingestion. Safe to call on an existing DB (IF NOT EXISTS guards).
+Declares all node tables, relationship tables, and vector indexes that
+match the Code-Graph-RAG schema. Must be run once before any ingestion.
+Safe to call on an existing DB — every DDL uses ``IF NOT EXISTS`` guards
+and vector index creation is wrapped in try/except to handle the
+already-exists case gracefully.
+
+Schema layout:
+    Node tables
+        Project, Package, Folder, File, Module, Class, Function, Method,
+        Interface, Enum, ExternalPackage, Embedding.
+
+        The ``Embedding`` table is deliberately separated from
+        ``Function``/``Method`` so pass-4 (``generate-embeddings``) can
+        DELETE+CREATE rows without tripping LadybugDB's "cannot SET an
+        indexed vector column" constraint during MERGE.
+
+    Relationship tables
+        CONTAINS_FILE, CONTAINS_FOLDER, CONTAINS_PACKAGE, CONTAINS_MODULE,
+        DEFINES, DEFINES_METHOD, CALLS, IMPORTS, INHERITS, IMPLEMENTS,
+        OVERRIDES, BELONGS_TO.
+
+    Vector indexes
+        Only one — on ``Embedding.embedding`` — used by semantic search.
 """
 from __future__ import annotations
 
@@ -12,9 +32,12 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # Node table definitions
 # ---------------------------------------------------------------------------
+# Order matters only indirectly: rel tables below reference these node
+# tables, so node DDL is always executed first in migrate().
 _NODE_TABLES: list[str] = [
     """CREATE NODE TABLE IF NOT EXISTS Project(
         name STRING,
+        root_path STRING,
         PRIMARY KEY (name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Package(
@@ -57,6 +80,7 @@ _NODE_TABLES: list[str] = [
         end_line INT64,
         docstring STRING,
         source_code STRING,
+        is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Method(
@@ -67,6 +91,7 @@ _NODE_TABLES: list[str] = [
         end_line INT64,
         docstring STRING,
         source_code STRING,
+        is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Interface(
@@ -98,6 +123,9 @@ _NODE_TABLES: list[str] = [
 # ---------------------------------------------------------------------------
 # Relationship table definitions
 # ---------------------------------------------------------------------------
+# Each REL TABLE may have multiple FROM/TO pairs because LadybugDB requires
+# declaring every valid endpoint combination up front (unlike some graph
+# DBs that allow ad-hoc typing at edge-insert time).
 _REL_TABLES: list[str] = [
     """CREATE REL TABLE IF NOT EXISTS CONTAINS_FILE(
         FROM Project TO File,
@@ -112,6 +140,10 @@ _REL_TABLES: list[str] = [
         FROM Project TO Package,
         FROM Package TO Package
     )""",
+    """CREATE REL TABLE IF NOT EXISTS CONTAINS_MODULE(
+        FROM Project TO Module,
+        FROM Package TO Module
+    )""",
     """CREATE REL TABLE IF NOT EXISTS DEFINES(
         FROM Module TO Class,
         FROM Module TO Function,
@@ -125,7 +157,9 @@ _REL_TABLES: list[str] = [
         FROM Function TO Function,
         FROM Function TO Method,
         FROM Method TO Function,
-        FROM Method TO Method
+        FROM Method TO Method,
+        FROM Module TO Function,
+        FROM Module TO Method
     )""",
     """CREATE REL TABLE IF NOT EXISTS IMPORTS(
         FROM Module TO Module,
@@ -162,15 +196,23 @@ _VECTOR_INDEXES: list[tuple[str, str, str]] = [
 def migrate(db_path: str) -> None:
     """Run schema migration on the given LadybugDB database path.
 
-    Idempotent — safe to call on an existing database. Node/rel tables
-    use IF NOT EXISTS; vector indexes are created in a try/except to
-    handle the already-exists case gracefully.
+    Idempotent — safe to call on an existing database. Node/rel tables use
+    ``IF NOT EXISTS``; vector indexes are created in a try/except to handle
+    the already-exists case gracefully (LadybugDB does not support
+    ``CREATE ... IF NOT EXISTS`` for vector indexes).
+
+    Args:
+        db_path: Filesystem path to the LadybugDB database file. Created if
+            it does not exist.
     """
     logger.info(f"Running LadybugDB schema migration on: {db_path}")
     db = lb.Database(db_path)
     conn = lb.Connection(db)
 
+    # Node DDL first — rel tables below reference these types.
     for ddl in _NODE_TABLES:
+        # Extract the table name from the DDL for logging only — LadybugDB
+        # does not echo the created object name back to the caller.
         table_name = ddl.split("TABLE IF NOT EXISTS")[1].split("(")[0].strip()
         conn.execute(ddl)
         logger.debug(f"  Node table: {table_name}")
@@ -180,7 +222,12 @@ def migrate(db_path: str) -> None:
         conn.execute(ddl)
         logger.debug(f"  Rel table: {table_name}")
 
-    # Load the VECTOR extension (required for CREATE_VECTOR_INDEX / QUERY_VECTOR_INDEX)
+    # Load the VECTOR extension (required for CREATE_VECTOR_INDEX /
+    # QUERY_VECTOR_INDEX). INSTALL fetches the binary if not present; LOAD
+    # registers it with this connection. Both are guarded: INSTALL is
+    # idempotent and LOAD is non-fatal so the core schema still builds even
+    # on systems where the extension is unavailable — semantic search just
+    # won't work until the extension is present.
     try:
         conn.execute("INSTALL VECTOR")
         logger.debug("  VECTOR extension installed")
@@ -197,6 +244,8 @@ def migrate(db_path: str) -> None:
             conn.execute(f"CALL CREATE_VECTOR_INDEX('{node_table}', '{idx_name}', '{prop}')")
             logger.debug(f"  Vector index: {idx_name} on {node_table}.{prop}")
         except Exception as e:
+            # There's no IF NOT EXISTS for vector indexes, so detect the
+            # already-exists case by error substring and treat it as success.
             if "already exists" in str(e).lower():
                 logger.debug(f"  Vector index {idx_name} already exists — skipping")
             else:
