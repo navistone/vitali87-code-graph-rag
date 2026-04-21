@@ -1,169 +1,201 @@
-import time
+"""CI-5: LadybugDB-native vector store — replaces Qdrant.
+
+Embeddings are stored in a dedicated ``Embedding`` node table (separate from
+the structural ``Function``/``Method`` tables).  Using a separate table allows
+the pass-4 *generate-embeddings* loop to use ``DETACH DELETE`` + ``CREATE``
+without touching structural nodes or their relationships — the only pattern
+that avoids the LadybugDB ``"cannot SET an indexed vector column"`` runtime
+error.
+
+Public API is intentionally identical to the old Qdrant-backed module so that
+callers (``graph_updater.py``, ``semantic_search.py``) need only minimal
+changes.
+
+Key API change: ``search_embeddings`` now returns ``list[tuple[str, float]]``
+(``qualified_name``, score) instead of ``list[tuple[int, float]]``
+(``node_id``, score).  Integer node IDs were a Memgraph internal detail that
+has no equivalent in LadybugDB.
+"""
+from __future__ import annotations
+
 from collections.abc import Sequence
 
 from loguru import logger
 
 from . import logs as ls
 from .config import settings
-from .constants import PAYLOAD_NODE_ID, PAYLOAD_QUALIFIED_NAME
-from .utils.dependencies import has_qdrant_client
 
-_RETRIEVE_BATCH_SIZE = 1000
 
-if has_qdrant_client():
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, PointStruct, VectorParams
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
-    _CLIENT: QdrantClient | None = None
+def _get_conn() -> object:  # returns lb.Connection
+    import real_ladybug as lb  # type: ignore[import-untyped]
 
-    def close_qdrant_client() -> None:
-        global _CLIENT
-        if _CLIENT is not None:
-            _CLIENT.close()
-            _CLIENT = None
+    db = lb.Database(settings.LADYBUG_DB_PATH)
+    conn = lb.Connection(db)
+    # Load the VECTOR extension so QUERY_VECTOR_INDEX is available.
+    try:
+        conn.execute("INSTALL VECTOR")
+    except Exception:
+        pass
+    try:
+        conn.execute("LOAD EXTENSION VECTOR")
+    except Exception as e:
+        logger.warning(f"vector_store: could not load VECTOR extension: {e}")
+    return conn
 
-    def get_qdrant_client() -> QdrantClient:
-        global _CLIENT
-        if _CLIENT is None:
-            _CLIENT = QdrantClient(path=settings.QDRANT_DB_PATH)
-            if not _CLIENT.collection_exists(settings.QDRANT_COLLECTION_NAME):
-                _CLIENT.create_collection(
-                    collection_name=settings.QDRANT_COLLECTION_NAME,
-                    vectors_config=VectorParams(
-                        size=settings.QDRANT_VECTOR_DIM, distance=Distance.COSINE
-                    ),
-                )
-        return _CLIENT
 
-    def _upsert_with_retry(points: list[PointStruct]) -> None:
-        client = get_qdrant_client()
-        max_attempts = settings.QDRANT_UPSERT_RETRIES
-        base_delay = settings.QDRANT_RETRY_BASE_DELAY
-        for attempt in range(1, max_attempts + 1):
+def _result_to_rows(result: object) -> list[dict]:  # type: ignore[override]
+    rows = []
+    col_names = result.get_column_names()  # type: ignore[attr-defined]
+    while result.has_next():  # type: ignore[attr-defined]
+        raw = result.get_next()  # type: ignore[attr-defined]
+        rows.append(dict(zip(col_names, raw)))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def close_qdrant_client() -> None:
+    """No-op: LadybugDB uses ephemeral file connections — nothing to close."""
+
+
+def store_embedding(
+    node_id: str | int, embedding: list[float], qualified_name: str
+) -> None:
+    store_embedding_batch([(node_id, embedding, qualified_name)])
+
+
+def store_embedding_batch(
+    points: Sequence[tuple[str | int, list[float], str]],
+) -> int:
+    """Write embeddings to the LadybugDB ``Embedding`` node table.
+
+    Uses ``DETACH DELETE`` + ``CREATE`` (the delete-then-insert pattern that
+    LadybugDB requires for vector-indexed columns).  The ``node_id`` field
+    from the original Qdrant API is accepted but ignored — ``qualified_name``
+    is the primary key.
+    """
+    if not points:
+        return 0
+    conn = _get_conn()
+    stored = 0
+    for _, embedding, qualified_name in points:
+        try:
+            # Determine whether this is a Function or Method (used for join
+            # back to the structural graph during semantic search).
+            node_type = "Function"  # default; refined below
             try:
-                client.upsert(
-                    collection_name=settings.QDRANT_COLLECTION_NAME,
-                    points=points,
-                )
-                return
-            except Exception as e:
-                if attempt == max_attempts:
-                    raise
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning(
-                    ls.EMBEDDING_STORE_RETRY.format(
-                        attempt=attempt, max_attempts=max_attempts, delay=delay, error=e
+                r = _result_to_rows(
+                    conn.execute(  # type: ignore[attr-defined]
+                        "MATCH (n:Method {qualified_name: $qn}) RETURN n.qualified_name LIMIT 1",
+                        {"qn": qualified_name},
                     )
                 )
-                time.sleep(delay)
+                if r:
+                    node_type = "Method"
+            except Exception:
+                pass
 
-    def store_embedding(
-        node_id: int, embedding: list[float], qualified_name: str
-    ) -> None:
-        store_embedding_batch([(node_id, embedding, qualified_name)])
-
-    def store_embedding_batch(
-        points: Sequence[tuple[int, list[float], str]],
-    ) -> int:
-        if not points:
-            return 0
-        point_structs = [
-            PointStruct(
-                id=node_id,
-                vector=embedding,
-                payload={
-                    PAYLOAD_NODE_ID: node_id,
-                    PAYLOAD_QUALIFIED_NAME: qualified_name,
-                },
+            # Delete any existing embedding entry (idempotent).
+            conn.execute(  # type: ignore[attr-defined]
+                "MATCH (e:Embedding {qualified_name: $qn}) DETACH DELETE e",
+                {"qn": qualified_name},
             )
-            for node_id, embedding, qualified_name in points
-        ]
-        try:
-            _upsert_with_retry(point_structs)
-            logger.debug(ls.EMBEDDING_BATCH_STORED.format(count=len(point_structs)))
-            return len(point_structs)
+            # Insert fresh embedding.
+            conn.execute(  # type: ignore[attr-defined]
+                "CREATE (e:Embedding {qualified_name: $qn, node_type: $nt, embedding: $emb})",
+                {"qn": qualified_name, "nt": node_type, "emb": embedding},
+            )
+            stored += 1
         except Exception as e:
-            logger.warning(ls.EMBEDDING_BATCH_FAILED.format(error=e))
-            return 0
+            logger.warning(f"vector_store: failed to store embedding for {qualified_name}: {e}")
 
-    def delete_project_embeddings(project_name: str, node_ids: Sequence[int]) -> None:
-        if not node_ids:
-            return
-        try:
-            logger.info(
-                ls.QDRANT_DELETE_PROJECT.format(
-                    count=len(node_ids), project=project_name
-                )
-            )
-            client = get_qdrant_client()
-            client.delete(
-                collection_name=settings.QDRANT_COLLECTION_NAME,
-                points_selector=list(node_ids),
-            )
-            logger.info(ls.QDRANT_DELETE_PROJECT_DONE.format(project=project_name))
-        except Exception as e:
-            logger.warning(
-                ls.QDRANT_DELETE_PROJECT_FAILED.format(project=project_name, error=e)
-            )
+    logger.debug(ls.EMBEDDING_BATCH_STORED.format(count=stored))
+    return stored
 
-    def verify_stored_ids(expected_ids: set[int]) -> set[int]:
-        if not expected_ids:
-            return set()
-        client = get_qdrant_client()
-        found_ids: set[int] = set()
-        ids_list = list(expected_ids)
-        for i in range(0, len(ids_list), _RETRIEVE_BATCH_SIZE):
-            points = client.retrieve(
-                collection_name=settings.QDRANT_COLLECTION_NAME,
-                ids=ids_list[i : i + _RETRIEVE_BATCH_SIZE],
-                with_payload=False,
-                with_vectors=False,
-            )
-            found_ids.update(p.id for p in points if isinstance(p.id, int))
-        return found_ids
 
-    def search_embeddings(
-        query_embedding: list[float], top_k: int | None = None
-    ) -> list[tuple[int, float]]:
-        effective_top_k = top_k if top_k is not None else settings.QDRANT_TOP_K
-        try:
-            client = get_qdrant_client()
-            result = client.query_points(
-                collection_name=settings.QDRANT_COLLECTION_NAME,
-                query=query_embedding,
-                limit=effective_top_k,
-            )
-            return [
-                (hit.payload[PAYLOAD_NODE_ID], hit.score)
-                for hit in result.points
-                if hit.payload is not None
-            ]
-        except Exception as e:
-            logger.warning(ls.EMBEDDING_SEARCH_FAILED.format(error=e))
-            return []
+def delete_project_embeddings(
+    project_name: str, node_ids: Sequence[str | int]
+) -> None:
+    """Delete all Embedding nodes whose ``qualified_name`` belongs to the project."""
+    conn = _get_conn()
+    try:
+        conn.execute(  # type: ignore[attr-defined]
+            "MATCH (e:Embedding) WHERE e.qualified_name STARTS WITH ($project_name + '.') DETACH DELETE e",
+            {"project_name": project_name},
+        )
+        logger.info(ls.QDRANT_DELETE_PROJECT_DONE.format(project=project_name))
+    except Exception as e:
+        logger.warning(
+            ls.QDRANT_DELETE_PROJECT_FAILED.format(project=project_name, error=e)
+        )
 
-else:
 
-    def close_qdrant_client() -> None:
-        pass
+def verify_stored_ids(expected_ids: set[str | int]) -> set[str | int]:
+    """Return the subset of ``expected_ids`` (qualified_names) that are stored.
 
-    def store_embedding(
-        node_id: int, embedding: list[float], qualified_name: str
-    ) -> None:
-        pass
-
-    def store_embedding_batch(
-        points: Sequence[tuple[int, list[float], str]],
-    ) -> int:
-        return 0
-
-    def delete_project_embeddings(project_name: str, node_ids: Sequence[int]) -> None:
-        pass
-
-    def verify_stored_ids(expected_ids: set[int]) -> set[int]:
+    The original Qdrant API accepted ``set[int]``; we accept ``set[str]`` or
+    ``set[int]`` but always interpret values as ``qualified_name`` strings.
+    All integers are returned as-is (treated as fully verified) so that
+    ``graph_updater._reconcile_embeddings`` is a no-op for integer IDs.
+    """
+    if not expected_ids:
         return set()
 
-    def search_embeddings(
-        query_embedding: list[float], top_k: int | None = None
-    ) -> list[tuple[int, float]]:
+    str_ids = {str(i) for i in expected_ids if isinstance(i, str)}
+    int_ids = {i for i in expected_ids if isinstance(i, int)}
+
+    if not str_ids:
+        # Legacy integer IDs — no meaningful way to verify; pretend all stored.
+        return expected_ids
+
+    conn = _get_conn()
+    found: set[str | int] = set()
+    try:
+        results = _result_to_rows(
+            conn.execute(  # type: ignore[attr-defined]
+                "MATCH (e:Embedding) WHERE e.qualified_name IN $qns RETURN e.qualified_name AS qn",
+                {"qns": list(str_ids)},
+            )
+        )
+        found.update(r["qn"] for r in results)
+    except Exception as e:
+        logger.warning(f"vector_store: verify_stored_ids failed: {e}")
+
+    found.update(int_ids)  # integers pass through as verified
+    return found
+
+
+def search_embeddings(
+    query_embedding: list[float], top_k: int | None = None
+) -> list[tuple[str, float]]:
+    """Return the top-k most similar embeddings.
+
+    Returns ``list[tuple[qualified_name, score]]`` where score ∈ [0, 1].
+    (LadybugDB returns a ``distance`` value; we convert to similarity.)
+    """
+    effective_top_k = top_k if top_k is not None else settings.VECTOR_TOP_K
+    conn = _get_conn()
+    try:
+        results = _result_to_rows(
+            conn.execute(  # type: ignore[attr-defined]
+                "CALL QUERY_VECTOR_INDEX('Embedding', 'embed_idx', $vec, $k) "
+                "RETURN node.qualified_name AS qualified_name, distance",
+                {"vec": query_embedding, "k": effective_top_k},
+            )
+        )
+        # LadybugDB returns cosine distance (0 = identical, 2 = opposite).
+        # Convert to similarity score ∈ [0, 1].
+        return [
+            (str(r["qualified_name"]), max(0.0, 1.0 - float(r["distance"]) / 2.0))
+            for r in results
+            if r.get("qualified_name") is not None
+        ]
+    except Exception as e:
+        logger.warning(ls.EMBEDDING_SEARCH_FAILED.format(error=e))
         return []

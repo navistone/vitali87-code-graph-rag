@@ -149,7 +149,7 @@ class TestGenerateSemanticEmbeddings:
     ) -> None:
         (temp_repo / "module.py").write_text("def hello():\n    return 42\n")
         row: ResultRow = {
-            cs.KEY_NODE_ID: 1,
+            cs.KEY_NODE_ID: "proj.func1",
             cs.KEY_QUALIFIED_NAME: "myproject.module.hello",
             cs.KEY_START_LINE: 1,
             cs.KEY_END_LINE: 2,
@@ -163,7 +163,8 @@ class TestGenerateSemanticEmbeddings:
         mock_store_batch.assert_called_once()
         batch_arg = mock_store_batch.call_args[0][0]
         assert len(batch_arg) == 1
-        assert batch_arg[0] == (1, MOCK_EMBEDDING, "myproject.module.hello")
+        # LadybugDB: first element is qualified_name (str), not integer node_id
+        assert batch_arg[0] == ("proj.func1", MOCK_EMBEDDING, "myproject.module.hello")
 
     @_PATCH_DEPS
     @_PATCH_EMBED
@@ -179,7 +180,7 @@ class TestGenerateSemanticEmbeddings:
         query_ingestor: MagicMock,
     ) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 1,
+            cs.KEY_NODE_ID: "proj.func1",
             cs.KEY_QUALIFIED_NAME: "myproject.module.hello",
         }
         query_ingestor.fetch_all.return_value = [row]
@@ -205,7 +206,7 @@ class TestGenerateSemanticEmbeddings:
     ) -> None:
         (temp_repo / "module.py").write_text("def hello():\n    return 42\n")
         row: ResultRow = {
-            cs.KEY_NODE_ID: 1,
+            cs.KEY_NODE_ID: "proj.func1",
             cs.KEY_QUALIFIED_NAME: "myproject.module.hello",
             cs.KEY_START_LINE: 1,
             cs.KEY_END_LINE: 2,
@@ -231,7 +232,7 @@ class TestGenerateSemanticEmbeddings:
         query_ingestor: MagicMock,
     ) -> None:
         bad_row: ResultRow = {
-            cs.KEY_NODE_ID: "not_an_int",
+            cs.KEY_NODE_ID: 42,
             cs.KEY_QUALIFIED_NAME: "pkg.func",
         }
         query_ingestor.fetch_all.return_value = [bad_row]
@@ -259,14 +260,14 @@ class TestGenerateSemanticEmbeddings:
         (temp_repo / "b.py").write_text("def f2():\n    pass\n")
         rows: list[ResultRow] = [
             {
-                cs.KEY_NODE_ID: 1,
+                cs.KEY_NODE_ID: "proj.func1",
                 cs.KEY_QUALIFIED_NAME: "proj.a.f1",
                 cs.KEY_START_LINE: 1,
                 cs.KEY_END_LINE: 2,
                 cs.KEY_PATH: "a.py",
             },
             {
-                cs.KEY_NODE_ID: 2,
+                cs.KEY_NODE_ID: "proj.func2",
                 cs.KEY_QUALIFIED_NAME: "proj.b.f2",
                 cs.KEY_START_LINE: 1,
                 cs.KEY_END_LINE: 2,

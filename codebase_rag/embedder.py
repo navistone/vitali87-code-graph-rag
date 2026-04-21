@@ -78,7 +78,7 @@ _embedding_cache: EmbeddingCache | None = None
 def get_embedding_cache() -> EmbeddingCache:
     global _embedding_cache
     if _embedding_cache is None:
-        cache_path = Path(settings.QDRANT_DB_PATH) / cs.EMBEDDING_CACHE_FILENAME
+        cache_path = Path(settings.EMBEDDING_CACHE_DIR) / cs.EMBEDDING_CACHE_FILENAME
         _embedding_cache = EmbeddingCache(path=cache_path)
         _embedding_cache.load()
     return _embedding_cache

@@ -56,22 +56,25 @@ WHERE c.qualified_name ENDS WITH '.UserService'
 RETURN m.name AS name, m.qualified_name AS qualified_name, labels(m) AS type
 LIMIT {CYPHER_DEFAULT_LIMIT}"""
 
+# LadybugDB: properties(n)/properties(r) and type(r) are not supported.
+# Use `RETURN n` (whole-node dict with _ID/_LABEL + all props) and label(r).
 CYPHER_EXPORT_NODES = """
 MATCH (n)
-RETURN id(n) as node_id, labels(n) as labels, properties(n) as properties
+RETURN label(n) AS label, n AS node_data
 """
 
 CYPHER_EXPORT_RELATIONSHIPS = """
 MATCH (a)-[r]->(b)
-RETURN id(a) as from_id, id(b) as to_id, type(r) as type, properties(r) as properties
+RETURN label(r) AS type, a AS from_node, b AS to_node
 """
 
 CYPHER_RETURN_COUNT = "RETURN count(r) as created"
 CYPHER_SET_PROPS_RETURN_COUNT = "SET r += row.props\nRETURN count(r) as created"
 
+# LadybugDB: look up by qualified_name (no integer id(n) exists).
 CYPHER_GET_FUNCTION_SOURCE_LOCATION = """
 MATCH (m:Module)-[:DEFINES]->(n)
-WHERE id(n) = $node_id
+WHERE n.qualified_name = $node_id
 RETURN n.qualified_name AS qualified_name, n.start_line AS start_line,
        n.end_line AS end_line, m.path AS path
 """
@@ -88,13 +91,19 @@ def wrap_with_unwind(query: str) -> str:
     return f"UNWIND $batch AS row\n{query}"
 
 
-def build_nodes_by_ids_query(node_ids: list[int]) -> str:
+def build_nodes_by_ids_query(node_ids: list[str]) -> str:  # type: ignore[override]
+    """Build a Cypher query to look up Function/Method nodes by qualified_name.
+
+    LadybugDB has no integer id(n); ``node_ids`` are qualified_name strings.
+    Note: LadybugDB supports label union syntax (Function|Method) but not
+    WHERE (n:Function OR n:Method).
+    """
     placeholders = ", ".join(f"${i}" for i in range(len(node_ids)))
     return f"""
-MATCH (n)
-WHERE id(n) IN [{placeholders}]
-RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
-       labels(n) AS type, n.name AS name
+MATCH (n:Function|Method)
+WHERE n.qualified_name IN [{placeholders}]
+RETURN n.qualified_name AS node_id, n.qualified_name AS qualified_name,
+       label(n) AS type, n.name AS name
 ORDER BY n.qualified_name
 """
 

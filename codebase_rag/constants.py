@@ -419,21 +419,25 @@ CSPROJ_SUFFIX = ".csproj"
 # (H) Cypher queries
 CYPHER_DEFAULT_LIMIT = 50
 
+# LadybugDB: use label union in MATCH clause — WHERE (n:A OR n:B) is not supported.
 _CYPHER_EMBEDDING_BASE = """
-MATCH (m:Module)-[:DEFINES]->(n)
-WHERE (n:Function OR n:Method)
-  AND m.qualified_name STARTS WITH ($project_name + '.')
+MATCH (m:Module)-[:DEFINES]->(n:Function|Method)
+WHERE m.qualified_name STARTS WITH ($project_name + '.')
 """
 
 CYPHER_QUERY_EMBEDDINGS = (
     _CYPHER_EMBEDDING_BASE
-    + """RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
+    # LadybugDB has no integer id(n) — use qualified_name as the node_id.
+    + """RETURN n.qualified_name AS node_id, n.qualified_name AS qualified_name,
        n.start_line AS start_line, n.end_line AS end_line,
        m.path AS path
 """
 )
 
-CYPHER_QUERY_PROJECT_NODE_IDS = _CYPHER_EMBEDDING_BASE + "RETURN id(n) AS node_id\n"
+# LadybugDB: return qualified_name instead of id(n) for project node IDs.
+CYPHER_QUERY_PROJECT_NODE_IDS = (
+    _CYPHER_EMBEDDING_BASE + "RETURN n.qualified_name AS node_id\n"
+)
 
 
 class SupportedLanguage(StrEnum):

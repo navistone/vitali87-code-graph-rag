@@ -260,15 +260,16 @@ class MCPToolsRegistry:
             logger.error(lg.MCP_ERROR_LIST_PROJECTS.format(error=e))
             return ListProjectsErrorResult(error=str(e), projects=[], count=0)
 
-    def _get_project_node_ids(self, project_name: str) -> list[int]:
+    def _get_project_node_ids(self, project_name: str) -> list[str]:
+        # LadybugDB: node_id is qualified_name (string), not an integer id(n).
         rows = self.ingestor.fetch_all(
             cs.CYPHER_QUERY_PROJECT_NODE_IDS,
             {cs.KEY_PROJECT_NAME: project_name},
         )
-        result: list[int] = []
+        result: list[str] = []
         for row in rows:
             node_id = row.get(cs.KEY_NODE_ID)
-            if isinstance(node_id, int):
+            if isinstance(node_id, str):
                 result.append(node_id)
         return result
 
