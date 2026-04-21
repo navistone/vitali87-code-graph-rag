@@ -505,9 +505,9 @@ class GraphUpdater:
             logger.info(ls.GENERATING_EMBEDDINGS, count=len(results))
 
             embedded_count = 0
-            expected_ids: set[int] = set()
-            batch_buffer: list[tuple[int, list[float], str]] = []
-            batch_size = settings.QDRANT_BATCH_SIZE
+            expected_ids: set[str] = set()
+            batch_buffer: list[tuple[str, list[float], str]] = []
+            batch_size = settings.VECTOR_BATCH_SIZE
 
             for row in results:
                 parsed = self._parse_embedding_result(row)
@@ -568,8 +568,8 @@ class GraphUpdater:
 
     def _reconcile_embeddings(
         self,
-        expected_ids: set[int],
-        verify_fn: Callable[[set[int]], set[int]],
+        expected_ids: set[str],
+        verify_fn: Callable[[set[str]], set[str]],
     ) -> None:
         if not expected_ids:
             return
@@ -625,7 +625,8 @@ class GraphUpdater:
         node_id = row.get(cs.KEY_NODE_ID)
         qualified_name = row.get(cs.KEY_QUALIFIED_NAME)
 
-        if not isinstance(node_id, int) or not isinstance(qualified_name, str):
+        # LadybugDB returns qualified_name as node_id (no integer id(n)).
+        if not isinstance(node_id, str) or not isinstance(qualified_name, str):
             return None
 
         start_line = row.get(cs.KEY_START_LINE)

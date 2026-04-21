@@ -187,7 +187,8 @@ class GraphSummary(TypedDict):
 
 
 class EmbeddingQueryResult(TypedDict):
-    node_id: int
+    # LadybugDB: qualified_name is the primary key; no integer node ID exists.
+    node_id: str
     qualified_name: str
     start_line: int | None
     end_line: int | None
@@ -195,7 +196,8 @@ class EmbeddingQueryResult(TypedDict):
 
 
 class SemanticSearchResult(TypedDict):
-    node_id: int
+    # node_id is the qualified_name string (LadybugDB has no integer node IDs).
+    node_id: str
     qualified_name: str
     name: str
     type: str

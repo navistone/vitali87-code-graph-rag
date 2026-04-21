@@ -1,8 +1,17 @@
+"""Legacy MemgraphIngestor tests — skipped after LadybugDB swap (CI-4).
+
+These tests were written against the mgclient/Bolt-protocol implementation.
+The graph_service module is now a thin compatibility shim re-exporting
+LadybugIngestor.  New tests live in test_ladybug_ingestor.py.
+"""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Skip the entire module — tests reference mgclient internals that no longer exist.
+pytestmark = pytest.mark.skip(reason="Legacy Memgraph/mgclient tests — superseded by LadybugDB (CI-4)")
 
 from codebase_rag.constants import NODE_UNIQUE_CONSTRAINTS
 from codebase_rag.cypher_queries import (

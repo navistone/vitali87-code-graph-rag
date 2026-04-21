@@ -33,9 +33,7 @@ CMD_LANGUAGE_LIST = "List all currently configured languages."
 CMD_LANGUAGE_REMOVE = "Remove a language from the project."
 CMD_LANGUAGE_CLEANUP = "Clean up orphaned git modules that weren't properly removed."
 
-HELP_BATCH_SIZE = "Number of buffered nodes/relationships before flushing to Memgraph"
-HELP_MEMGRAPH_HOST = "Memgraph host"
-HELP_MEMGRAPH_PORT = "Memgraph port"
+HELP_BATCH_SIZE = "Number of buffered nodes/relationships before flushing to LadybugDB"
 HELP_ORCHESTRATOR = (
     "Specify orchestrator as provider:model "
     "(e.g., ollama:llama3.2, openai:gpt-4, google:gemini-2.5-pro)"

@@ -1,3 +1,4 @@
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,6 +7,13 @@ import pytest
 from codebase_rag.mcp.tools import MCPToolsRegistry
 
 pytestmark = [pytest.mark.anyio]
+
+
+@pytest.fixture(autouse=True)
+def mock_delete_project_embeddings() -> Generator[MagicMock, None, None]:
+    """Patch delete_project_embeddings so tests don't open a real LadybugDB file."""
+    with patch("codebase_rag.mcp.tools.delete_project_embeddings") as mock:
+        yield mock
 
 
 @pytest.fixture(params=["asyncio"])

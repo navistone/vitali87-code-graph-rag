@@ -34,15 +34,16 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
             logger.info(ls.SEMANTIC_NO_MATCH.format(query=query))
             return []
 
-        node_ids = [node_id for node_id, _ in search_results]
+        # search_results is list[tuple[str, float]] — qualified_name, score
+        node_ids = [qn for qn, _ in search_results]
 
         with MemgraphIngestor(
-            host=settings.MEMGRAPH_HOST,
-            port=settings.MEMGRAPH_PORT,
+            db_path=settings.LADYBUG_DB_PATH,
             batch_size=cs.SEMANTIC_BATCH_SIZE,
         ) as ingestor:
             cypher_query = build_nodes_by_ids_query(node_ids)
-            params = {str(i): node_id for i, node_id in enumerate(node_ids)}
+            # Parameters named by index position ("0", "1", …) matching the placeholders.
+            params = {str(i): qn for i, qn in enumerate(node_ids)}
             results = ingestor._execute_query(cypher_query, params)
 
             results_map = {res["node_id"]: res for res in results}
@@ -77,7 +78,7 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
         return []
 
 
-def get_function_source_code(node_id: int) -> str | None:
+def get_function_source_code(node_id: str) -> str | None:  # type: ignore[override]
     try:
         from ..config import settings
         from ..services.graph_service import MemgraphIngestor
@@ -87,8 +88,7 @@ def get_function_source_code(node_id: int) -> str | None:
         )
 
         with MemgraphIngestor(
-            host=settings.MEMGRAPH_HOST,
-            port=settings.MEMGRAPH_PORT,
+            db_path=settings.LADYBUG_DB_PATH,
             batch_size=cs.SEMANTIC_BATCH_SIZE,
         ) as ingestor:
             results = ingestor._execute_query(
@@ -143,7 +143,7 @@ def create_semantic_search_tool() -> Tool:
 
 
 def create_get_function_source_tool() -> Tool:
-    async def get_function_source_by_id(node_id: int) -> str:
+    async def get_function_source_by_id(node_id: str) -> str:
         logger.info(ls.SEMANTIC_TOOL_SOURCE.format(id=node_id))
 
         source_code = get_function_source_code(node_id)

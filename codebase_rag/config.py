@@ -142,13 +142,10 @@ class AppConfig(BaseSettings):
         case_sensitive=False,
     )
 
-    MEMGRAPH_HOST: str = "localhost"
-    MEMGRAPH_PORT: int = 7687
-    MEMGRAPH_HTTP_PORT: int = 7444
-    MEMGRAPH_USERNAME: str | None = None
-    MEMGRAPH_PASSWORD: str | None = None
-    LAB_PORT: int = 3000
-    MEMGRAPH_BATCH_SIZE: int = 1000
+    # LadybugDB (replaces Memgraph — embedded, no Docker)
+    LADYBUG_DB_PATH: str = ".cgr/graph.db"
+    LADYBUG_BATCH_SIZE: int = 1000
+
     AGENT_RETRIES: int = 3
     ORCHESTRATOR_OUTPUT_RETRIES: int = 100
 
@@ -242,13 +239,13 @@ class AppConfig(BaseSettings):
         }
     )
 
-    QDRANT_DB_PATH: str = "./.qdrant_code_embeddings"
-    QDRANT_COLLECTION_NAME: str = "code_embeddings"
-    QDRANT_VECTOR_DIM: int = 768
-    QDRANT_TOP_K: int = 5
-    QDRANT_UPSERT_RETRIES: int = Field(default=3, gt=0)
-    QDRANT_RETRY_BASE_DELAY: float = Field(default=0.5, gt=0)
-    QDRANT_BATCH_SIZE: int = Field(default=50, gt=0)
+    # Embedding / vector search settings (replaces Qdrant — now LadybugDB native)
+    VECTOR_TOP_K: int = 5
+    VECTOR_BATCH_SIZE: int = Field(default=50, gt=0)
+    VECTOR_UPSERT_RETRIES: int = Field(default=3, gt=0)
+    VECTOR_RETRY_BASE_DELAY: float = Field(default=0.5, gt=0)
+    # Cache directory reuses the LadybugDB parent dir for locality
+    EMBEDDING_CACHE_DIR: str = ".cgr"
     EMBEDDING_MAX_LENGTH: int = 512
     EMBEDDING_PROGRESS_INTERVAL: int = 10
 
@@ -330,7 +327,7 @@ class AppConfig(BaseSettings):
         return provider.lower(), model
 
     def resolve_batch_size(self, batch_size: int | None) -> int:
-        resolved = self.MEMGRAPH_BATCH_SIZE if batch_size is None else batch_size
+        resolved = self.LADYBUG_BATCH_SIZE if batch_size is None else batch_size
         if resolved < 1:
             raise ValueError(ex.BATCH_SIZE_POSITIVE)
         return resolved
