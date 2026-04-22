@@ -812,7 +812,7 @@ IGNORE_PATTERNS = frozenset(
         ".nyc_output",
         ".pnpm-store",
         ".pytest_cache",
-        ".qdrant_code_embeddings",
+        ".qdrant_code_embeddings",  # legacy Qdrant data dir — safe to skip if present
         ".ruff_cache",
         ".svn",
         ".tmp",
@@ -951,9 +951,13 @@ TEXT_UNKNOWN = "unknown"
 
 MODULE_TORCH = "torch"
 MODULE_TRANSFORMERS = "transformers"
+# MODULE_QDRANT_CLIENT is kept as a string constant for backward compatibility
+# with any external callers; the qdrant-client package itself has been removed.
 MODULE_QDRANT_CLIENT = "qdrant_client"
 
-SEMANTIC_DEPENDENCIES = (MODULE_QDRANT_CLIENT, MODULE_TORCH, MODULE_TRANSFORMERS)
+# LadybugDB native vector indexes replaced Qdrant — semantic deps are now
+# only the embedding model stack (torch + transformers).
+SEMANTIC_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 
 

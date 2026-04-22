@@ -4,7 +4,6 @@ import importlib.util
 from collections.abc import Sequence
 
 from codebase_rag.constants import (
-    MODULE_QDRANT_CLIENT,
     MODULE_TORCH,
     MODULE_TRANSFORMERS,
 )
@@ -29,11 +28,21 @@ def has_transformers() -> bool:
 
 
 def has_qdrant_client() -> bool:
-    return _check_dependency(MODULE_QDRANT_CLIENT)
+    """Deprecated: Qdrant was replaced by LadybugDB native vector indexes.
+
+    Always returns False. Kept only for any external callers that may check
+    for the old Qdrant-backed optional dependency group.
+    """
+    return False
 
 
 def has_semantic_dependencies() -> bool:
-    return has_qdrant_client() and has_torch() and has_transformers()
+    """Return True when UniXcoder embedding dependencies are available.
+
+    Requires only ``torch`` and ``transformers`` — ``qdrant_client`` was
+    removed when the vector store was migrated to LadybugDB native indexes.
+    """
+    return has_torch() and has_transformers()
 
 
 def check_dependencies(required_modules: Sequence[str]) -> bool:
