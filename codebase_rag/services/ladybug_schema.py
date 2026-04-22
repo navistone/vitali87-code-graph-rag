@@ -70,6 +70,7 @@ _NODE_TABLES: list[str] = [
         start_line INT64,
         end_line INT64,
         docstring STRING,
+        is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Function(

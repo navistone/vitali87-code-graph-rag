@@ -72,10 +72,23 @@ CYPHER_RETURN_COUNT = "RETURN count(r) as created"
 CYPHER_SET_PROPS_RETURN_COUNT = "SET r += row.props\nRETURN count(r) as created"
 
 # LadybugDB: look up by qualified_name (no integer id(n) exists).
+# Two MATCH patterns cover top-level symbols (Module -[:DEFINES]-> Function/Class)
+# and nested methods (Module -[:DEFINES]-> Class -[:DEFINES_METHOD]-> Method).
+# The Project is found by matching its name as the leading component of the
+# symbol's qualified_name (e.g. "myproject.pkg.mod.fn" -> Project {name:"myproject"}).
+# This avoids an OPTIONAL MATCH cartesian product when multiple projects share a DB.
 CYPHER_GET_FUNCTION_SOURCE_LOCATION = """
 MATCH (m:Module)-[:DEFINES]->(n)
 WHERE n.qualified_name = $node_id
 OPTIONAL MATCH (proj:Project)
+WHERE m.qualified_name STARTS WITH proj.name
+RETURN n.qualified_name AS qualified_name, n.start_line AS start_line,
+       n.end_line AS end_line, m.path AS path, proj.root_path AS root_path
+UNION
+MATCH (m:Module)-[:DEFINES]->(c:Class)-[:DEFINES_METHOD]->(n:Method)
+WHERE n.qualified_name = $node_id
+OPTIONAL MATCH (proj:Project)
+WHERE m.qualified_name STARTS WITH proj.name
 RETURN n.qualified_name AS qualified_name, n.start_line AS start_line,
        n.end_line AS end_line, m.path AS path, proj.root_path AS root_path
 """
