@@ -10,6 +10,12 @@ from tree_sitter import Node, Parser
 
 from . import constants as cs
 from . import logs as ls
+from .cypher_queries import (
+    CYPHER_DELETE_MODULE_DEFINES,
+    CYPHER_DELETE_MODULE_METHODS,
+    CYPHER_DELETE_MODULE_NODE,
+    CYPHER_DELETE_ORPHAN_PACKAGES,
+)
 from .config import settings
 from .language_spec import LANGUAGE_FQN_SPECS, get_language_spec
 from .parsers.factory import ProcessorFactory
@@ -361,6 +367,30 @@ class GraphUpdater:
                 self.simple_name_lookup[simple_name] = new_qn_set
                 logger.debug(ls.CLEANED_SIMPLE_NAME, name=simple_name)
 
+        # ------------------------------------------------------------------
+        # Graph DB cleanup — remove Module and its descendants, then prune
+        # any Package nodes that have become orphans.
+        # Skipped gracefully when the ingestor does not support writes (e.g.
+        # in unit tests using a stub ingestor).
+        # ------------------------------------------------------------------
+        if hasattr(self.ingestor, "execute_write"):
+            params = {"qn": module_qn_prefix}
+            try:
+                self.ingestor.execute_write(CYPHER_DELETE_MODULE_METHODS, params)
+                self.ingestor.execute_write(CYPHER_DELETE_MODULE_DEFINES, params)
+                self.ingestor.execute_write(CYPHER_DELETE_MODULE_NODE, params)
+                self.ingestor.execute_write(CYPHER_DELETE_ORPHAN_PACKAGES, {})
+                logger.debug(
+                    "Removed graph nodes for module %s and pruned orphan packages",
+                    module_qn_prefix,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "graph_updater: could not remove graph nodes for %s: %s",
+                    module_qn_prefix,
+                    exc,
+                )
+
     def _collect_eligible_files(self) -> list[Path]:
         if self._single_file is not None:
             if not should_skip_path(
@@ -374,17 +404,25 @@ class GraphUpdater:
 
         eligible: list[Path] = []
         for filepath in self.repo_path.rglob("*"):
-            if (
-                filepath.is_file()
-                and filepath.name != cs.HASH_CACHE_FILENAME
-                and not should_skip_path(
-                    filepath,
-                    self.repo_path,
-                    exclude_paths=self.exclude_paths,
-                    unignore_paths=self.unignore_paths,
+            try:
+                if (
+                    filepath.is_file()
+                    and filepath.name != cs.HASH_CACHE_FILENAME
+                    and not should_skip_path(
+                        filepath,
+                        self.repo_path,
+                        exclude_paths=self.exclude_paths,
+                        unignore_paths=self.unignore_paths,
+                    )
+                ):
+                    eligible.append(filepath)
+            except (UnicodeDecodeError, ValueError, OSError) as exc:
+                # Filenames with non-UTF-8 bytes produce surrogate-escaped
+                # Path objects on Linux; str() on them raises UnicodeDecodeError.
+                # OSError can occur when the file disappears mid-scan.
+                logger.warning(
+                    "Skipping file with unreadable path during scan: %s", exc
                 )
-            ):
-                eligible.append(filepath)
         return eligible
 
     def _process_files(self, force: bool = False) -> None:

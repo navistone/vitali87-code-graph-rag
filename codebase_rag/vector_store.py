@@ -18,7 +18,8 @@ has no equivalent in LadybugDB.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 
 from loguru import logger
 
@@ -30,7 +31,19 @@ from .config import settings
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_conn() -> object:  # returns lb.Connection
+@contextmanager
+def _open_conn() -> Generator[object, None, None]:
+    """Open a LadybugDB connection and ensure it is closed on exit.
+
+    Yields the ``lb.Connection`` object.  Both the connection *and* the
+    underlying ``lb.Database`` are deleted in the ``finally`` block so that
+    kuzu releases its file-lock on the embedded database file promptly.
+
+    Usage::
+
+        with _open_conn() as conn:
+            conn.execute(...)
+    """
     import real_ladybug as lb  # type: ignore[import-untyped]
 
     db = lb.Database(settings.LADYBUG_DB_PATH)
@@ -44,7 +57,11 @@ def _get_conn() -> object:  # returns lb.Connection
         conn.execute("LOAD EXTENSION VECTOR")
     except Exception as e:
         logger.warning(f"vector_store: could not load VECTOR extension: {e}")
-    return conn
+    try:
+        yield conn
+    finally:
+        del conn
+        del db
 
 
 def _result_to_rows(result: object) -> list[dict]:  # type: ignore[override]
@@ -82,38 +99,38 @@ def store_embedding_batch(
     """
     if not points:
         return 0
-    conn = _get_conn()
     stored = 0
-    for _, embedding, qualified_name in points:
-        try:
-            # Determine whether this is a Function or Method (used for join
-            # back to the structural graph during semantic search).
-            node_type = "Function"  # default; refined below
+    with _open_conn() as conn:
+        for _, embedding, qualified_name in points:
             try:
-                r = _result_to_rows(
-                    conn.execute(  # type: ignore[attr-defined]
-                        "MATCH (n:Method {qualified_name: $qn}) RETURN n.qualified_name LIMIT 1",
-                        {"qn": qualified_name},
+                # Determine whether this is a Function or Method (used for join
+                # back to the structural graph during semantic search).
+                node_type = "Function"  # default; refined below
+                try:
+                    r = _result_to_rows(
+                        conn.execute(  # type: ignore[attr-defined]
+                            "MATCH (n:Method {qualified_name: $qn}) RETURN n.qualified_name LIMIT 1",
+                            {"qn": qualified_name},
+                        )
                     )
-                )
-                if r:
-                    node_type = "Method"
-            except Exception:
-                pass
+                    if r:
+                        node_type = "Method"
+                except Exception:
+                    pass
 
-            # Delete any existing embedding entry (idempotent).
-            conn.execute(  # type: ignore[attr-defined]
-                "MATCH (e:Embedding {qualified_name: $qn}) DETACH DELETE e",
-                {"qn": qualified_name},
-            )
-            # Insert fresh embedding.
-            conn.execute(  # type: ignore[attr-defined]
-                "CREATE (e:Embedding {qualified_name: $qn, node_type: $nt, embedding: $emb})",
-                {"qn": qualified_name, "nt": node_type, "emb": embedding},
-            )
-            stored += 1
-        except Exception as e:
-            logger.warning(f"vector_store: failed to store embedding for {qualified_name}: {e}")
+                # Delete any existing embedding entry (idempotent).
+                conn.execute(  # type: ignore[attr-defined]
+                    "MATCH (e:Embedding {qualified_name: $qn}) DETACH DELETE e",
+                    {"qn": qualified_name},
+                )
+                # Insert fresh embedding.
+                conn.execute(  # type: ignore[attr-defined]
+                    "CREATE (e:Embedding {qualified_name: $qn, node_type: $nt, embedding: $emb})",
+                    {"qn": qualified_name, "nt": node_type, "emb": embedding},
+                )
+                stored += 1
+            except Exception as e:
+                logger.warning(f"vector_store: failed to store embedding for {qualified_name}: {e}")
 
     logger.debug(ls.EMBEDDING_BATCH_STORED.format(count=stored))
     return stored
@@ -123,17 +140,17 @@ def delete_project_embeddings(
     project_name: str, node_ids: Sequence[str | int]
 ) -> None:
     """Delete all Embedding nodes whose ``qualified_name`` belongs to the project."""
-    conn = _get_conn()
-    try:
-        conn.execute(  # type: ignore[attr-defined]
-            "MATCH (e:Embedding) WHERE e.qualified_name STARTS WITH ($project_name + '.') DETACH DELETE e",
-            {"project_name": project_name},
-        )
-        logger.info(ls.QDRANT_DELETE_PROJECT_DONE.format(project=project_name))
-    except Exception as e:
-        logger.warning(
-            ls.QDRANT_DELETE_PROJECT_FAILED.format(project=project_name, error=e)
-        )
+    with _open_conn() as conn:
+        try:
+            conn.execute(  # type: ignore[attr-defined]
+                "MATCH (e:Embedding) WHERE e.qualified_name STARTS WITH ($project_name + '.') DETACH DELETE e",
+                {"project_name": project_name},
+            )
+            logger.info(ls.QDRANT_DELETE_PROJECT_DONE.format(project=project_name))
+        except Exception as e:
+            logger.warning(
+                ls.QDRANT_DELETE_PROJECT_FAILED.format(project=project_name, error=e)
+            )
 
 
 def verify_stored_ids(expected_ids: set[str | int]) -> set[str | int]:
@@ -154,18 +171,18 @@ def verify_stored_ids(expected_ids: set[str | int]) -> set[str | int]:
         # Legacy integer IDs — no meaningful way to verify; pretend all stored.
         return expected_ids
 
-    conn = _get_conn()
     found: set[str | int] = set()
-    try:
-        results = _result_to_rows(
-            conn.execute(  # type: ignore[attr-defined]
-                "MATCH (e:Embedding) WHERE e.qualified_name IN $qns RETURN e.qualified_name AS qn",
-                {"qns": list(str_ids)},
+    with _open_conn() as conn:
+        try:
+            results = _result_to_rows(
+                conn.execute(  # type: ignore[attr-defined]
+                    "MATCH (e:Embedding) WHERE e.qualified_name IN $qns RETURN e.qualified_name AS qn",
+                    {"qns": list(str_ids)},
+                )
             )
-        )
-        found.update(r["qn"] for r in results)
-    except Exception as e:
-        logger.warning(f"vector_store: verify_stored_ids failed: {e}")
+            found.update(r["qn"] for r in results)
+        except Exception as e:
+            logger.warning(f"vector_store: verify_stored_ids failed: {e}")
 
     found.update(int_ids)  # integers pass through as verified
     return found
@@ -180,22 +197,22 @@ def search_embeddings(
     (LadybugDB returns a ``distance`` value; we convert to similarity.)
     """
     effective_top_k = top_k if top_k is not None else settings.VECTOR_TOP_K
-    conn = _get_conn()
-    try:
-        results = _result_to_rows(
-            conn.execute(  # type: ignore[attr-defined]
-                "CALL QUERY_VECTOR_INDEX('Embedding', 'embed_idx', $vec, $k) "
-                "RETURN node.qualified_name AS qualified_name, distance",
-                {"vec": query_embedding, "k": effective_top_k},
+    with _open_conn() as conn:
+        try:
+            results = _result_to_rows(
+                conn.execute(  # type: ignore[attr-defined]
+                    "CALL QUERY_VECTOR_INDEX('Embedding', 'embed_idx', $vec, $k) "
+                    "RETURN node.qualified_name AS qualified_name, distance",
+                    {"vec": query_embedding, "k": effective_top_k},
+                )
             )
-        )
-        # LadybugDB returns cosine distance (0 = identical, 2 = opposite).
-        # Convert to similarity score ∈ [0, 1].
-        return [
-            (str(r["qualified_name"]), max(0.0, 1.0 - float(r["distance"]) / 2.0))
-            for r in results
-            if r.get("qualified_name") is not None
-        ]
-    except Exception as e:
-        logger.warning(ls.EMBEDDING_SEARCH_FAILED.format(error=e))
-        return []
+            # LadybugDB returns cosine distance (0 = identical, 2 = opposite).
+            # Convert to similarity score ∈ [0, 1].
+            return [
+                (str(r["qualified_name"]), max(0.0, 1.0 - float(r["distance"]) / 2.0))
+                for r in results
+                if r.get("qualified_name") is not None
+            ]
+        except Exception as e:
+            logger.warning(ls.EMBEDDING_SEARCH_FAILED.format(error=e))
+            return []
