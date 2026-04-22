@@ -37,6 +37,57 @@
 
 An accurate Retrieval-Augmented Generation (RAG) system that analyzes multi-language codebases using Tree-sitter, builds comprehensive knowledge graphs, and enables natural language querying of codebase structure and relationships as well as editing capabilities.
 
+---
+
+> **navistone fork — LadybugDB edition**
+>
+> This is the `navistone` internal fork of `iflow-mcp/vitali87-code-graph-rag`.
+> The upstream used **Memgraph** (BSL 1.1, requires Docker) and **Qdrant** as
+> separate services. This fork replaces both with **LadybugDB** — an embedded
+> kuzu-based graph + vector store (MIT, no Docker, no separate process).
+>
+> | Upstream | This fork |
+> |---|---|
+> | Memgraph (BSL 1.1, Docker required) | LadybugDB / kuzu (MIT, embedded) |
+> | Qdrant vector store (separate process) | LadybugDB native vector index |
+> | `MEMGRAPH_HOST`, `MEMGRAPH_PORT` | `LADYBUG_DB_PATH` (file path) |
+> | `docker-compose up` required | `uv sync` + run — zero Docker |
+>
+> **Quick start (fork):**
+> ```bash
+> cd code-graph-rag
+> uv sync                                         # install dependencies
+> cgr start --repo-path /path/to/your/repo        # index a repo
+> cgr mcp-server                                  # start MCP server
+> ```
+>
+> **Run tests (fork):**
+> ```bash
+> # Unit tests (no Docker, no Ollama):
+> uv run pytest codebase_rag/tests/ \
+>   --ignore=codebase_rag/tests/test_unixcoder_unit.py \
+>   -q
+>
+> # LadybugDB-specific tests (unit + e2e index/query):
+> uv run pytest codebase_rag/tests/test_ladybug_vector_store.py \
+>              codebase_rag/tests/integration/test_ladybug_e2e.py -v
+>
+> # Integration tests:
+> uv run pytest codebase_rag/tests/integration/ -v
+> ```
+>
+> **Environment variables (fork):**
+>
+> | Variable | Default | Description |
+> |---|---|---|
+> | `LADYBUG_DB_PATH` | `.cgr/graph.db` | Embedded graph DB file path |
+> | `LADYBUG_BATCH_SIZE` | `1000` | Ingestor flush batch size |
+>
+> All upstream Memgraph/Qdrant env vars (`MEMGRAPH_HOST`, `QDRANT_URL`, etc.)
+> are ignored — they no longer have effect.
+
+---
+
 
 <p align="center">
   <img src="./assets/demo.gif" alt="demo">

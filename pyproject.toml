@@ -88,7 +88,7 @@ treesitter-full = [
 ]
 
 semantic = [
-    "qdrant-client>=1.9.0",
+    # qdrant-client removed in CI-5 (LadybugDB native vector index replaces Qdrant)
     "torch>=2.6.0",
     "transformers>=4.0.0",
 ]

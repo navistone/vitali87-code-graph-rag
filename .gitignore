@@ -24,3 +24,6 @@ PROJECT.md
 .pypi_cache.json
 .omc
 site/
+.cgr/
+graph.json
+my-project/
