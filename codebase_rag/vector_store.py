@@ -1,218 +1,183 @@
-"""CI-5: LadybugDB-native vector store — replaces Qdrant.
+"""Numpy-based embedding store — replaces the LadybugDB vector index.
 
-Embeddings are stored in a dedicated ``Embedding`` node table (separate from
-the structural ``Function``/``Method`` tables).  Using a separate table allows
-the pass-4 *generate-embeddings* loop to use ``DETACH DELETE`` + ``CREATE``
-without touching structural nodes or their relationships — the only pattern
-that avoids the LadybugDB ``"cannot SET an indexed vector column"`` runtime
-error.
+Embeddings are stored in per-repo numpy files alongside the DB file:
+  {db_dir}/{slug}.embeddings.npy        — float32 matrix (N × 768)
+  {db_dir}/{slug}.embeddings_idx.json   — list of qualified_names (index → qn)
 
-Public API is intentionally identical to the old Qdrant-backed module so that
-callers (``graph_updater.py``, ``semantic_search.py``) need only minimal
-changes.
-
-Key API change: ``search_embeddings`` now returns ``list[tuple[str, float]]``
-(``qualified_name``, score) instead of ``list[tuple[int, float]]``
-(``node_id``, score).  Integer node IDs were a Memgraph internal detail that
-has no equivalent in LadybugDB.
+This avoids any LadybugDB vector extension dependency so the DB can be
+opened in any fresh process without pre-loading the VECTOR extension.
+Semantic search uses numpy cosine similarity — plenty fast for codebases
+up to ~50k functions.
 """
 from __future__ import annotations
 
-from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+import json
+import logging
+from pathlib import Path
 
-from loguru import logger
+import numpy as np
 
-from . import logs as ls
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-@contextmanager
-def _open_conn() -> Generator[object, None, None]:
-    """Open a LadybugDB connection and ensure it is closed on exit.
 
-    Yields the ``lb.Connection`` object.  Both the connection *and* the
-    underlying ``lb.Database`` are deleted in the ``finally`` block so that
-    kuzu releases its file-lock on the embedded database file promptly.
-
-    Usage::
-
-        with _open_conn() as conn:
-            conn.execute(...)
-    """
-    import real_ladybug as lb  # type: ignore[import-untyped]
-
-    db = lb.Database(settings.LADYBUG_DB_PATH)
-    conn = lb.Connection(db)
-    # Load the VECTOR extension so QUERY_VECTOR_INDEX is available.
-    try:
-        conn.execute("INSTALL VECTOR")
-    except Exception:
-        pass
-    try:
-        conn.execute("LOAD EXTENSION VECTOR")
-    except Exception as e:
-        logger.warning(f"vector_store: could not load VECTOR extension: {e}")
-    try:
-        yield conn
-    finally:
-        del conn
-        del db
+def _emb_paths(db_path: str) -> tuple[Path, Path]:
+    """Return (npy_path, idx_path) for the given DB file."""
+    base = Path(db_path).with_suffix("")
+    return base.with_suffix(".embeddings.npy"), base.with_suffix(".embeddings_idx.json")
 
 
-def _result_to_rows(result: object) -> list[dict]:  # type: ignore[override]
-    rows = []
-    col_names = result.get_column_names()  # type: ignore[attr-defined]
-    while result.has_next():  # type: ignore[attr-defined]
-        raw = result.get_next()  # type: ignore[attr-defined]
-        rows.append(dict(zip(col_names, raw)))
-    return rows
+# In-memory accumulator used during the embedding pass.
+# Maps qualified_name -> np.ndarray(768,) float32.
+_pending: dict[str, np.ndarray] = {}
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def close_qdrant_client() -> None:
-    """No-op: LadybugDB uses ephemeral file connections — nothing to close."""
-
-
-def store_embedding(
-    node_id: str | int, embedding: list[float], qualified_name: str
-) -> None:
-    store_embedding_batch([(node_id, embedding, qualified_name)])
+    """No-op — kept for API compatibility."""
+    pass
 
 
 def store_embedding_batch(
-    points: Sequence[tuple[str | int, list[float], str]],
+    embeddings: list[tuple[str, list[float], str]],
+    *args: object,
+    **kwargs: object,
 ) -> int:
-    """Write embeddings to the LadybugDB ``Embedding`` node table.
+    """Accumulate embeddings in memory during the embedding pass.
 
-    Uses ``DETACH DELETE`` + ``CREATE`` (the delete-then-insert pattern that
-    LadybugDB requires for vector-indexed columns).  The ``node_id`` field
-    from the original Qdrant API is accepted but ignored — ``qualified_name``
-    is the primary key.
+    Accepts the legacy 3-tuple signature ``(node_id, vector, qualified_name)``
+    used by ``graph_updater._generate_semantic_embeddings()``.  ``node_id`` is
+    ignored — ``qualified_name`` is the key.
+
+    ``flush_embeddings()`` must be called once after all batches to persist to
+    disk.
+
+    Returns:
+        Number of embeddings accepted (non-None vectors).
     """
-    if not points:
+    count = 0
+    for item in embeddings:
+        if len(item) == 3:
+            # Legacy signature: (node_id, vector, qualified_name)
+            _node_id, vec, qn = item  # type: ignore[misc]
+        else:
+            # New signature: (qualified_name, vector)
+            qn, vec = item[0], item[1]  # type: ignore[misc]
+
+        if vec is not None:
+            _pending[qn] = np.asarray(vec, dtype=np.float32)
+            count += 1
+
+    logger.debug("Accumulated %d embeddings in memory (total pending: %d)", count, len(_pending))
+    return count
+
+
+def flush_embeddings(db_path: str | None = None) -> int:
+    """Write accumulated embeddings to disk and clear the in-memory store.
+
+    Args:
+        db_path: Path to the repo's .db file. Defaults to settings.LADYBUG_DB_PATH.
+
+    Returns:
+        Number of embeddings persisted.
+    """
+    path = db_path or settings.LADYBUG_DB_PATH
+    npy_path, idx_path = _emb_paths(path)
+
+    if not _pending:
+        logger.debug("flush_embeddings: nothing to write")
         return 0
-    stored = 0
-    with _open_conn() as conn:
-        for _, embedding, qualified_name in points:
-            try:
-                # Determine whether this is a Function or Method (used for join
-                # back to the structural graph during semantic search).
-                node_type = "Function"  # default; refined below
-                try:
-                    r = _result_to_rows(
-                        conn.execute(  # type: ignore[attr-defined]
-                            "MATCH (n:Method {qualified_name: $qn}) RETURN n.qualified_name LIMIT 1",
-                            {"qn": qualified_name},
-                        )
-                    )
-                    if r:
-                        node_type = "Method"
-                except Exception:
-                    pass
 
-                # Delete any existing embedding entry (idempotent).
-                conn.execute(  # type: ignore[attr-defined]
-                    "MATCH (e:Embedding {qualified_name: $qn}) DETACH DELETE e",
-                    {"qn": qualified_name},
-                )
-                # Insert fresh embedding.
-                conn.execute(  # type: ignore[attr-defined]
-                    "CREATE (e:Embedding {qualified_name: $qn, node_type: $nt, embedding: $emb})",
-                    {"qn": qualified_name, "nt": node_type, "emb": embedding},
-                )
-                stored += 1
-            except Exception as e:
-                logger.warning(f"vector_store: failed to store embedding for {qualified_name}: {e}")
+    qns = list(_pending.keys())
+    matrix = np.stack([_pending[q] for q in qns]).astype(np.float32)
 
-    logger.debug(ls.EMBEDDING_BATCH_STORED.format(count=stored))
-    return stored
+    npy_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(str(npy_path), matrix)
+    idx_path.write_text(json.dumps(qns))
+    count = len(qns)
+    _pending.clear()
+    logger.info("Flushed %d embeddings to %s", count, npy_path)
+    return count
 
 
-def delete_project_embeddings(
-    project_name: str, node_ids: Sequence[str | int]
-) -> None:
-    """Delete all Embedding nodes whose ``qualified_name`` belongs to the project."""
-    with _open_conn() as conn:
-        try:
-            conn.execute(  # type: ignore[attr-defined]
-                "MATCH (e:Embedding) WHERE e.qualified_name STARTS WITH ($project_name + '.') DETACH DELETE e",
-                {"project_name": project_name},
-            )
-            logger.info(ls.QDRANT_DELETE_PROJECT_DONE.format(project=project_name))
-        except Exception as e:
-            logger.warning(
-                ls.QDRANT_DELETE_PROJECT_FAILED.format(project=project_name, error=e)
-            )
+def search_embeddings(
+    query_vector: np.ndarray | list[float],
+    k: int = 10,
+    db_path: str | None = None,
+    top_k: int | None = None,
+) -> list[tuple[str, float]]:
+    """Find the top-k most similar embeddings using cosine similarity.
+
+    Args:
+        query_vector: 768-dim float vector.
+        k: Number of results to return.
+        db_path: Path to the repo's .db file. Defaults to settings.LADYBUG_DB_PATH.
+
+    Returns:
+        List of (qualified_name, score) tuples, descending by score.
+    """
+    # Accept legacy ``top_k`` kwarg for backward compatibility with callers
+    # that used the old LadybugDB-backed API.
+    effective_k = top_k if top_k is not None else k
+
+    path = db_path or settings.LADYBUG_DB_PATH
+    npy_path, idx_path = _emb_paths(path)
+
+    if not npy_path.exists() or not idx_path.exists():
+        logger.warning("search_embeddings: no embedding file at %s", npy_path)
+        return []
+
+    matrix = np.load(str(npy_path))  # (N, 768) float32
+    qns: list[str] = json.loads(idx_path.read_text())
+
+    q = np.asarray(query_vector, dtype=np.float32)
+    q_norm = q / (np.linalg.norm(q) + 1e-9)
+    mat_norms = matrix / (np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9)
+    scores = mat_norms @ q_norm  # (N,)
+
+    n_results = int(min(effective_k, len(scores)))
+    top_idx = np.argpartition(scores, -n_results)[-n_results:]
+    top_idx = top_idx[np.argsort(scores[top_idx])[::-1]]
+
+    return [(qns[i], float(scores[i])) for i in top_idx]
 
 
-def verify_stored_ids(expected_ids: set[str | int]) -> set[str | int]:
-    """Return the subset of ``expected_ids`` (qualified_names) that are stored.
+def verify_stored_ids(
+    expected_ids: set[str],
+    db_path: str | None = None,
+) -> set[str]:
+    """Return the subset of ``expected_ids`` that have stored embeddings.
 
-    The original Qdrant API accepted ``set[int]``; we accept ``set[str]`` or
-    ``set[int]`` but always interpret values as ``qualified_name`` strings.
-    All integers are returned as-is (treated as fully verified) so that
-    ``graph_updater._reconcile_embeddings`` is a no-op for integer IDs.
+    Args:
+        expected_ids: Set of qualified names to check.
+        db_path: Path to the repo's .db file. Defaults to settings.LADYBUG_DB_PATH.
+
+    Returns:
+        Subset of expected_ids that are present in the embedding index.
     """
     if not expected_ids:
         return set()
 
-    str_ids = {str(i) for i in expected_ids if isinstance(i, str)}
-    int_ids = {i for i in expected_ids if isinstance(i, int)}
+    path = db_path or settings.LADYBUG_DB_PATH
+    _npy_path, idx_path = _emb_paths(path)
 
-    if not str_ids:
-        # Legacy integer IDs — no meaningful way to verify; pretend all stored.
-        return expected_ids
+    if not idx_path.exists():
+        return set()
 
-    found: set[str | int] = set()
-    with _open_conn() as conn:
-        try:
-            results = _result_to_rows(
-                conn.execute(  # type: ignore[attr-defined]
-                    "MATCH (e:Embedding) WHERE e.qualified_name IN $qns RETURN e.qualified_name AS qn",
-                    {"qns": list(str_ids)},
-                )
-            )
-            found.update(r["qn"] for r in results)
-        except Exception as e:
-            logger.warning(f"vector_store: verify_stored_ids failed: {e}")
+    try:
+        stored = set(json.loads(idx_path.read_text()))
+    except Exception as exc:
+        logger.warning("verify_stored_ids: could not read index: %s", exc)
+        return set()
 
-    found.update(int_ids)  # integers pass through as verified
-    return found
-
-
-def search_embeddings(
-    query_embedding: list[float], top_k: int | None = None
-) -> list[tuple[str, float]]:
-    """Return the top-k most similar embeddings.
-
-    Returns ``list[tuple[qualified_name, score]]`` where score ∈ [0, 1].
-    (LadybugDB returns a ``distance`` value; we convert to similarity.)
-    """
-    effective_top_k = top_k if top_k is not None else settings.VECTOR_TOP_K
-    with _open_conn() as conn:
-        try:
-            results = _result_to_rows(
-                conn.execute(  # type: ignore[attr-defined]
-                    "CALL QUERY_VECTOR_INDEX('Embedding', 'embed_idx', $vec, $k) "
-                    "RETURN node.qualified_name AS qualified_name, distance",
-                    {"vec": query_embedding, "k": effective_top_k},
-                )
-            )
-            # LadybugDB returns cosine distance (0 = identical, 2 = opposite).
-            # Convert to similarity score ∈ [0, 1].
-            return [
-                (str(r["qualified_name"]), max(0.0, 1.0 - float(r["distance"]) / 2.0))
-                for r in results
-                if r.get("qualified_name") is not None
-            ]
-        except Exception as e:
-            logger.warning(ls.EMBEDDING_SEARCH_FAILED.format(error=e))
-            return []
+    return expected_ids & stored

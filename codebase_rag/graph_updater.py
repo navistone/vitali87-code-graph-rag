@@ -333,7 +333,10 @@ class GraphUpdater:
         logger.info(ls.ANALYSIS_COMPLETE)
         self.ingestor.flush_all()
 
-        self._generate_semantic_embeddings()
+        if settings.SKIP_EMBEDDINGS:
+            logger.info("Embedding pass skipped (SKIP_EMBEDDINGS=true)")
+        else:
+            self._generate_semantic_embeddings()
 
     def remove_file_from_state(self, file_path: Path) -> None:
         logger.debug(ls.REMOVING_STATE, path=file_path)
@@ -526,6 +529,7 @@ class GraphUpdater:
             from .embedder import embed_code, get_embedding_cache
             from .vector_store import (
                 close_qdrant_client,
+                flush_embeddings,
                 store_embedding_batch,
                 verify_stored_ids,
             )
@@ -594,9 +598,16 @@ class GraphUpdater:
             if batch_buffer:
                 embedded_count += store_embedding_batch(batch_buffer)
 
+            # Persist all in-memory embeddings to disk (numpy files).
+            db_path = str(self.ingestor._db_path) if hasattr(self.ingestor, "_db_path") else None
+            flush_embeddings(db_path=db_path)
+
             logger.info(ls.EMBEDDINGS_COMPLETE, count=embedded_count)
 
-            self._reconcile_embeddings(expected_ids, verify_stored_ids)
+            self._reconcile_embeddings(
+                expected_ids,
+                lambda ids: verify_stored_ids(ids, db_path=db_path),
+            )
 
             get_embedding_cache().save()
             close_qdrant_client()

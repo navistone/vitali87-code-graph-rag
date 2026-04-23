@@ -1,28 +1,24 @@
 """CI-3: LadybugDB schema migration (DEV-1171).
 
-Declares all node tables, relationship tables, and vector indexes that
-match the Code-Graph-RAG schema. Must be run once before any ingestion.
-Safe to call on an existing DB — every DDL uses ``IF NOT EXISTS`` guards
-and vector index creation is wrapped in try/except to handle the
-already-exists case gracefully.
+Declares all node tables and relationship tables that match the
+Code-Graph-RAG schema. Must be run once before any ingestion.
+Safe to call on an existing DB — every DDL uses ``IF NOT EXISTS`` guards.
+
+Embeddings are stored in per-repo numpy files alongside the DB file
+(see ``vector_store.py``), not in LadybugDB. This avoids the chicken-and-egg
+problem where opening a DB with a persisted vector index requires the VECTOR
+extension pre-loaded, but the extension can only be loaded after the DB is
+opened.
 
 Schema layout:
     Node tables
         Project, Package, Folder, File, Module, Class, Function, Method,
-        Interface, Enum, ExternalPackage, Embedding.
-
-        The ``Embedding`` table is deliberately separated from
-        ``Function``/``Method`` so pass-4 (``generate-embeddings``) can
-        DELETE+CREATE rows without tripping LadybugDB's "cannot SET an
-        indexed vector column" constraint during MERGE.
+        Interface, Enum, ExternalPackage.
 
     Relationship tables
         CONTAINS_FILE, CONTAINS_FOLDER, CONTAINS_PACKAGE, CONTAINS_MODULE,
         DEFINES, DEFINES_METHOD, CALLS, IMPORTS, INHERITS, IMPLEMENTS,
         OVERRIDES, BELONGS_TO.
-
-    Vector indexes
-        Only one — on ``Embedding.embedding`` — used by semantic search.
 """
 from __future__ import annotations
 
@@ -95,29 +91,40 @@ _NODE_TABLES: list[str] = [
         is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
+    # Interface / Enum mirror Class's shape — C# emits the full property
+    # set (decorators, start_line, docstring, is_exported) on these node
+    # types.  Without the columns declared, every flush silently drops the
+    # node with a "Binder exception: Cannot find property decorators"
+    # error and stalls ingestion with log spam.
     """CREATE NODE TABLE IF NOT EXISTS Interface(
         qualified_name STRING,
         name STRING,
+        decorators STRING[],
+        start_line INT64,
+        end_line INT64,
+        docstring STRING,
+        is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Enum(
         qualified_name STRING,
         name STRING,
+        decorators STRING[],
+        start_line INT64,
+        end_line INT64,
+        docstring STRING,
+        is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
+    # ExternalPackage uses ``name`` as its natural identifier (e.g.
+    # "NSwag.AspNetCore") — code-graph-rag's C# parser emits ``name`` as the
+    # only key.  Matching PK to the parser's contract here avoids a "Create
+    # node expects primary key qualified_name" error on every external-dep
+    # reference, which would poison every IMPORTS-edge batch.
     """CREATE NODE TABLE IF NOT EXISTS ExternalPackage(
-        qualified_name STRING,
         name STRING,
-        PRIMARY KEY (qualified_name)
-    )""",
-    # Separate embedding table — vector-indexed column lives here so that
-    # pass-4 (generate-embeddings) can DELETE + CREATE without touching the
-    # structural node or its relationships.
-    """CREATE NODE TABLE IF NOT EXISTS Embedding(
         qualified_name STRING,
-        node_type STRING,
-        embedding FLOAT[768],
-        PRIMARY KEY (qualified_name)
+        PRIMARY KEY (name)
     )""",
 ]
 
@@ -181,26 +188,12 @@ _REL_TABLES: list[str] = [
     )""",
 ]
 
-# ---------------------------------------------------------------------------
-# Vector indexes — run after node tables
-# ---------------------------------------------------------------------------
-_VECTOR_INDEXES: list[tuple[str, str, str]] = [
-    # (table_name, index_name, vector_column)
-    # CALL CREATE_VECTOR_INDEX(table, index_name, vector_col)
-    # Single index on the dedicated Embedding table; Function and Method
-    # no longer carry the embedding column directly, which avoids the
-    # "cannot SET an indexed vector column" constraint during MERGE.
-    ("Embedding", "embed_idx", "embedding"),
-]
-
-
 def migrate(db_path: str) -> None:
     """Run schema migration on the given LadybugDB database path.
 
     Idempotent — safe to call on an existing database. Node/rel tables use
-    ``IF NOT EXISTS``; vector indexes are created in a try/except to handle
-    the already-exists case gracefully (LadybugDB does not support
-    ``CREATE ... IF NOT EXISTS`` for vector indexes).
+    ``IF NOT EXISTS`` guards.  No VECTOR extension is loaded here; embeddings
+    are stored in per-repo numpy files (see ``vector_store.py``).
 
     Args:
         db_path: Filesystem path to the LadybugDB database file. Created if
@@ -222,34 +215,5 @@ def migrate(db_path: str) -> None:
         table_name = ddl.split("TABLE IF NOT EXISTS")[1].split("(")[0].strip()
         conn.execute(ddl)
         logger.debug(f"  Rel table: {table_name}")
-
-    # Load the VECTOR extension (required for CREATE_VECTOR_INDEX /
-    # QUERY_VECTOR_INDEX). INSTALL fetches the binary if not present; LOAD
-    # registers it with this connection. Both are guarded: INSTALL is
-    # idempotent and LOAD is non-fatal so the core schema still builds even
-    # on systems where the extension is unavailable — semantic search just
-    # won't work until the extension is present.
-    try:
-        conn.execute("INSTALL VECTOR")
-        logger.debug("  VECTOR extension installed")
-    except Exception:
-        pass  # already installed
-    try:
-        conn.execute("LOAD EXTENSION VECTOR")
-        logger.debug("  VECTOR extension loaded")
-    except Exception as e:
-        logger.warning(f"  Could not load VECTOR extension: {e} — semantic search will be unavailable")
-
-    for node_table, idx_name, prop in _VECTOR_INDEXES:
-        try:
-            conn.execute(f"CALL CREATE_VECTOR_INDEX('{node_table}', '{idx_name}', '{prop}')")
-            logger.debug(f"  Vector index: {idx_name} on {node_table}.{prop}")
-        except Exception as e:
-            # There's no IF NOT EXISTS for vector indexes, so detect the
-            # already-exists case by error substring and treat it as success.
-            if "already exists" in str(e).lower():
-                logger.debug(f"  Vector index {idx_name} already exists — skipping")
-            else:
-                logger.warning(f"  Vector index {idx_name}: {e}")
 
     logger.info("LadybugDB schema migration complete ✓")

@@ -748,6 +748,7 @@ class TreeSitterModule(StrEnum):
     JAVA = "tree_sitter_java"
     CPP = "tree_sitter_cpp"
     LUA = "tree_sitter_lua"
+    CSHARP = "tree_sitter_c_sharp"
 
 
 # (H) Query dict keys
