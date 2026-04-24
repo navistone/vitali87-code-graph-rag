@@ -361,11 +361,15 @@ def load_cgrignore_patterns(repo_path: Path) -> CgrignorePatterns:
     try:
         with ignore_file.open(encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                # Strip whitespace AND trailing slashes so entries like
+                # `.forge/` match both the directory and its descendants.
+                # Without this, `.forge/`.startswith(f"{p}/") becomes
+                # `.forge//` which matches nothing.
+                line = line.strip().rstrip("/")
                 if not line or line.startswith("#"):
                     continue
                 if line.startswith("!"):
-                    unignore.add(line[1:].strip())
+                    unignore.add(line[1:].strip().rstrip("/"))
                 else:
                     exclude.add(line)
         if exclude or unignore:

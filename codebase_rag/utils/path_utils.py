@@ -14,6 +14,14 @@ def should_skip_path(
     rel_path = path.relative_to(repo_path)
     rel_path_str = rel_path.as_posix()
     dir_parts = rel_path.parent.parts if path.is_file() else rel_path.parts
+    # For files, also let a bare filename like `.DS_Store` in .cgrignore
+    # match the file anywhere in the tree (gitignore-style filename match).
+    if (
+        exclude_paths
+        and path.is_file()
+        and path.name in exclude_paths
+    ):
+        return True
     if exclude_paths and (
         not exclude_paths.isdisjoint(dir_parts)
         or rel_path_str in exclude_paths
