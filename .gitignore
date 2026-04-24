@@ -22,6 +22,7 @@ PROJECT.md
 .envrc
 .DS_Store
 .pypi_cache.json
+.cgr-hash-cache.json
 .omc
 site/
 .cgr/
