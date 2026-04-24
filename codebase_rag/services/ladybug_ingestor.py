@@ -27,14 +27,11 @@ from datetime import UTC, datetime
 import real_ladybug as lb
 from loguru import logger
 
-from codebase_rag.config import settings
-
 from .. import exceptions as ex
 from .. import logs as ls
 from ..constants import (
     ERR_SUBSTR_ALREADY_EXISTS,
     ERR_SUBSTR_CONSTRAINT,
-    KEY_CREATED,
     KEY_FROM_VAL,
     KEY_NAME,
     KEY_PROJECT_NAME,
@@ -49,10 +46,6 @@ from ..cypher_queries import (
     CYPHER_EXPORT_NODES,
     CYPHER_EXPORT_RELATIONSHIPS,
     CYPHER_LIST_PROJECTS,
-    build_create_node_query,
-    build_create_relationship_query,
-    build_merge_node_query,
-    build_merge_relationship_query,
     wrap_with_unwind,
 )
 from ..types_defs import (
@@ -60,8 +53,6 @@ from ..types_defs import (
     BatchWrapper,
     GraphData,
     GraphMetadata,
-    NodeBatchRow,
-    PropertyDict,
     PropertyValue,
     RelBatchRow,
     ResultRow,
@@ -415,12 +406,11 @@ class LadybugIngestor:
                         rel_clause = f"MERGE (a)-[r:{rel_type}]->(b) SET {prop_set}"
                     else:
                         rel_clause = f"MERGE (a)-[:{rel_type}]->(b)"
+                elif prop_keys:
+                    prop_inline = ", ".join(f"{k}: row.{k}" for k in prop_keys)
+                    rel_clause = f"CREATE (a)-[:{rel_type} {{{prop_inline}}}]->(b)"
                 else:
-                    if prop_keys:
-                        prop_inline = ", ".join(f"{k}: row.{k}" for k in prop_keys)
-                        rel_clause = f"CREATE (a)-[:{rel_type} {{{prop_inline}}}]->(b)"
-                    else:
-                        rel_clause = f"CREATE (a)-[:{rel_type}]->(b)"
+                    rel_clause = f"CREATE (a)-[:{rel_type}]->(b)"
                 batch_query = f"{match_clause}\n{rel_clause}"
 
                 batch_size_n = len(batch_rows)

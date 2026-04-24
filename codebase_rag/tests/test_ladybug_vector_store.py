@@ -15,7 +15,6 @@ No Docker, no Qdrant, no network required.
 from __future__ import annotations
 
 import shutil
-import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
@@ -27,7 +26,7 @@ import pytest
 # (developer machines that haven't run `uv sync` yet).
 # ---------------------------------------------------------------------------
 try:
-    import real_ladybug as lb  # type: ignore[import-untyped]
+    import real_ladybug as lb  # type: ignore[import-untyped]  # noqa: F401
     _HAS_LADYBUG = True
 except ImportError:
     _HAS_LADYBUG = False
@@ -108,7 +107,10 @@ class TestStoreEmbedding:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = ladybug_db
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import store_embedding_batch, verify_stored_ids
+            from codebase_rag.vector_store import (
+                store_embedding_batch,
+                verify_stored_ids,
+            )
             emb_v1 = [1.0] + [0.0] * 767
             emb_v2 = [0.0, 1.0] + [0.0] * 766
             store_embedding_batch([(1, emb_v1, "proj.fn")])
@@ -135,7 +137,10 @@ class TestVerifyStoredIds:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = ladybug_db
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import store_embedding_batch, verify_stored_ids
+            from codebase_rag.vector_store import (
+                store_embedding_batch,
+                verify_stored_ids,
+            )
             store_embedding_batch([(1, [0.5] * 768, "myproj.mod.alpha")])
             found = verify_stored_ids({"myproj.mod.alpha"})
         assert "myproj.mod.alpha" in found
@@ -177,7 +182,10 @@ class TestSearchEmbeddings:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = ladybug_db
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import search_embeddings, store_embedding_batch
+            from codebase_rag.vector_store import (
+                search_embeddings,
+                store_embedding_batch,
+            )
 
             emb_a = [1.0] + [0.0] * 767          # unit vector in dim 0
             emb_b = [0.0, 1.0] + [0.0] * 766     # unit vector in dim 1
@@ -201,7 +209,10 @@ class TestSearchEmbeddings:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = ladybug_db
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import search_embeddings, store_embedding_batch
+            from codebase_rag.vector_store import (
+                search_embeddings,
+                store_embedding_batch,
+            )
 
             emb = [0.5] * 768
             store_embedding_batch([(1, emb, "proj.fn")])
@@ -215,7 +226,10 @@ class TestSearchEmbeddings:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = ladybug_db
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import search_embeddings, store_embedding_batch
+            from codebase_rag.vector_store import (
+                search_embeddings,
+                store_embedding_batch,
+            )
 
             points = [(i, [float(i % 10)] * 768, f"proj.fn_{i}") for i in range(10)]
             store_embedding_batch(points)
@@ -228,7 +242,10 @@ class TestSearchEmbeddings:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = ladybug_db
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import search_embeddings, store_embedding_batch
+            from codebase_rag.vector_store import (
+                search_embeddings,
+                store_embedding_batch,
+            )
 
             store_embedding_batch([(1, [0.1] * 768, "proj.fn")])
             results = search_embeddings([0.1] * 768, top_k=1)

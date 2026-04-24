@@ -34,7 +34,7 @@ import pytest
 # Skip if real_ladybug not installed
 # ---------------------------------------------------------------------------
 try:
-    import real_ladybug as lb  # type: ignore[import-untyped]
+    import real_ladybug as lb  # type: ignore[import-untyped]  # noqa: F401
     _HAS_LADYBUG = True
 except ImportError:
     _HAS_LADYBUG = False
@@ -203,7 +203,10 @@ class TestVectorStoreRoundTrip:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = db_path
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import search_embeddings, store_embedding_batch
+            from codebase_rag.vector_store import (
+                search_embeddings,
+                store_embedding_batch,
+            )
 
             emb1 = [1.0] + [0.0] * 767
             emb2 = [0.0, 1.0] + [0.0] * 766
@@ -229,7 +232,10 @@ class TestVectorStoreRoundTrip:
         with patch("codebase_rag.vector_store.settings") as s:
             s.LADYBUG_DB_PATH = db_path
             s.VECTOR_TOP_K = 5
-            from codebase_rag.vector_store import search_embeddings, store_embedding_batch
+            from codebase_rag.vector_store import (
+                search_embeddings,
+                store_embedding_batch,
+            )
 
             store_embedding_batch([(1, [0.5] * 768, "proj.mod.fn")])
             results = search_embeddings([0.5] * 768, top_k=1)

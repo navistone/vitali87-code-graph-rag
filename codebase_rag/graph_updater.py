@@ -10,13 +10,13 @@ from tree_sitter import Node, Parser
 
 from . import constants as cs
 from . import logs as ls
+from .config import settings
 from .cypher_queries import (
     CYPHER_DELETE_MODULE_DEFINES,
     CYPHER_DELETE_MODULE_METHODS,
     CYPHER_DELETE_MODULE_NODE,
     CYPHER_DELETE_ORPHAN_PACKAGES,
 )
-from .config import settings
 from .language_spec import LANGUAGE_FQN_SPECS, get_language_spec
 from .parsers.factory import ProcessorFactory
 from .services import IngestorProtocol, QueryProtocol
