@@ -519,6 +519,7 @@ class GraphUpdater:
                 start_line = parsed.get(cs.KEY_START_LINE)
                 end_line = parsed.get(cs.KEY_END_LINE)
                 file_path = parsed.get(cs.KEY_PATH)
+                docstring = parsed.get(cs.KEY_DOCSTRING)
 
                 if start_line is None or end_line is None or file_path is None:
                     logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
@@ -528,7 +529,8 @@ class GraphUpdater:
                     qualified_name, file_path, start_line, end_line
                 ):
                     try:
-                        embedding = embed_code(source_code)
+                        embed_text = self._build_embed_text(source_code, docstring)
+                        embedding = embed_code(embed_text)
                         batch_buffer.append((node_id, embedding, qualified_name))
                         expected_ids.add(node_id)
 
@@ -621,6 +623,14 @@ class GraphUpdater:
             file_path_obj, start_line, end_line, qualified_name, ast_extractor
         )
 
+    @staticmethod
+    def _build_embed_text(source_code: str, docstring: str | None) -> str:
+        if docstring:
+            return cs.EMBED_TEMPLATE_WITH_DOCSTRING.format(
+                docstring=docstring, source=source_code
+            )
+        return source_code
+
     def _parse_embedding_result(self, row: ResultRow) -> EmbeddingQueryResult | None:
         node_id = row.get(cs.KEY_NODE_ID)
         qualified_name = row.get(cs.KEY_QUALIFIED_NAME)
@@ -631,6 +641,7 @@ class GraphUpdater:
         start_line = row.get(cs.KEY_START_LINE)
         end_line = row.get(cs.KEY_END_LINE)
         file_path = row.get(cs.KEY_PATH)
+        docstring = row.get(cs.KEY_DOCSTRING)
 
         return EmbeddingQueryResult(
             node_id=node_id,
@@ -638,4 +649,5 @@ class GraphUpdater:
             start_line=start_line if isinstance(start_line, int) else None,
             end_line=end_line if isinstance(end_line, int) else None,
             path=file_path if isinstance(file_path, str) else None,
+            docstring=docstring if isinstance(docstring, str) else None,
         )

@@ -192,6 +192,7 @@ class EmbeddingQueryResult(TypedDict):
     start_line: int | None
     end_line: int | None
     path: str | None
+    docstring: str | None
 
 
 class SemanticSearchResult(TypedDict):

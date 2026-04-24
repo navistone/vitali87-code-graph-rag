@@ -395,6 +395,11 @@ KEY_DECORATORS = "decorators"
 KEY_DOCSTRING = "docstring"
 KEY_IS_EXPORTED = "is_exported"
 
+# (H) Embedding text template — docstring is prepended to source as a
+# comment so the semantic encoder sees both the natural-language
+# description and the implementation in a single input.
+EMBED_TEMPLATE_WITH_DOCSTRING = "# {docstring}\n{source}"
+
 # (H) Method signature formatting
 EMPTY_PARENS = "()"
 DOCSTRING_STRIP_CHARS = "'\" \n"
@@ -429,7 +434,7 @@ CYPHER_QUERY_EMBEDDINGS = (
     _CYPHER_EMBEDDING_BASE
     + """RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
        n.start_line AS start_line, n.end_line AS end_line,
-       m.path AS path
+       m.path AS path, n.docstring AS docstring
 """
 )
 
