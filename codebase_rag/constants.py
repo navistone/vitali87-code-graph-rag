@@ -430,7 +430,7 @@ CYPHER_QUERY_EMBEDDINGS = (
     # LadybugDB has no integer id(n) — use qualified_name as the node_id.
     + """RETURN n.qualified_name AS node_id, n.qualified_name AS qualified_name,
        n.start_line AS start_line, n.end_line AS end_line,
-       m.path AS path
+       m.path AS path, n.docstring AS docstring
 """
 )
 
@@ -748,6 +748,7 @@ class TreeSitterModule(StrEnum):
     JAVA = "tree_sitter_java"
     CPP = "tree_sitter_cpp"
     LUA = "tree_sitter_lua"
+    CSHARP = "tree_sitter_c_sharp"
 
 
 # (H) Query dict keys
@@ -812,7 +813,7 @@ IGNORE_PATTERNS = frozenset(
         ".nyc_output",
         ".pnpm-store",
         ".pytest_cache",
-        ".qdrant_code_embeddings",
+        ".qdrant_code_embeddings",  # legacy Qdrant data dir — safe to skip if present
         ".ruff_cache",
         ".svn",
         ".tmp",
@@ -951,9 +952,10 @@ TEXT_UNKNOWN = "unknown"
 
 MODULE_TORCH = "torch"
 MODULE_TRANSFORMERS = "transformers"
-MODULE_QDRANT_CLIENT = "qdrant_client"
 
-SEMANTIC_DEPENDENCIES = (MODULE_QDRANT_CLIENT, MODULE_TORCH, MODULE_TRANSFORMERS)
+# Semantic dependencies: torch + transformers (UniXcoder model stack).
+# Qdrant was removed in the LadybugDB migration; qdrant-client is no longer installed.
+SEMANTIC_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 
 

@@ -29,16 +29,15 @@ keywords = [
     "graph-database",
     "semantic-search",
     "codebase",
-    "memgraph",
     "developer-tools",
     "monorepo",
 ]
 dependencies = [
     "loguru>=0.7.3",
     "mcp>=1.21.1",
+    "numpy>=1.26.0",
     "pydantic-ai>=1.27.0",
     "pydantic-settings>=2.0.0",
-    "pymgclient>=1.4.0",
     "python-dotenv>=1.1.0",
     "toml>=0.10.2",
     "tree-sitter-python>=0.23.6",
@@ -62,8 +61,9 @@ cgr = "codebase_rag.cli:app"
 [tool.uv]
 package = true
 
-[tool.setuptools]
-packages = ["codebase_rag", "codec", "cgr"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codebase_rag*", "codec*", "cgr*"]
 
 [project.optional-dependencies]
 test = [
@@ -87,7 +87,7 @@ treesitter-full = [
 ]
 
 semantic = [
-    "qdrant-client>=1.9.0",
+    # qdrant-client removed in CI-5 (LadybugDB native vector index replaces Qdrant)
     "torch>=2.6.0",
     "transformers>=4.0.0",
 ]

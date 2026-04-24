@@ -182,5 +182,6 @@ class TestParseEmbeddingResult:
             "start_line": None,
             "end_line": None,
             "path": None,
+            "docstring": None,
         }
         assert result == expected

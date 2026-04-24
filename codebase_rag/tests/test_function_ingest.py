@@ -112,6 +112,65 @@ class TestExtractFunctionName:
         result = definition_processor._extract_function_name(func_node)
         assert result is None
 
+    def test_arrow_in_setTimeout_does_not_inherit_var_name(
+        self,
+        definition_processor: DefinitionProcessor,
+        parsers_and_queries: tuple,
+    ) -> None:
+        """Regression: `const t = setTimeout(() => {...})` should NOT name the
+        inner arrow function `t`. The variable binds the timeout ID, not the
+        arrow function — the arrow is a callback argument."""
+        parsers, _ = parsers_and_queries
+        if cs.SupportedLanguage.JS not in parsers:
+            pytest.skip("JavaScript parser not available")
+
+        code = "const t = setTimeout(() => { doThing(); }, 100);"
+        root = parse_code(code, cs.SupportedLanguage.JS, parsers)
+        arrow_node = find_first_node_of_type(root, "arrow_function")
+        assert arrow_node is not None
+
+        # Should NOT pick up "t" — the arrow is a callback, not the var's value.
+        result = definition_processor._extract_function_name(arrow_node)
+        assert result is None
+
+    def test_arrow_in_map_callback_does_not_inherit_var_name(
+        self,
+        definition_processor: DefinitionProcessor,
+        parsers_and_queries: tuple,
+    ) -> None:
+        """Arrow functions used as .map/.filter callbacks must not inherit the
+        outer variable's name (e.g. `const result = arr.map(x => x * 2)`)."""
+        parsers, _ = parsers_and_queries
+        if cs.SupportedLanguage.JS not in parsers:
+            pytest.skip("JavaScript parser not available")
+
+        code = "const result = [1,2,3].map(x => x * 2);"
+        root = parse_code(code, cs.SupportedLanguage.JS, parsers)
+        arrow_node = find_first_node_of_type(root, "arrow_function")
+        assert arrow_node is not None
+
+        result = definition_processor._extract_function_name(arrow_node)
+        assert result is None
+
+    def test_arrow_as_object_property_value_does_not_inherit_var_name(
+        self,
+        definition_processor: DefinitionProcessor,
+        parsers_and_queries: tuple,
+    ) -> None:
+        """`const cfg = { onClick: () => {...} }` — arrow is a property value,
+        not the variable's direct binding. Should not be named `cfg`."""
+        parsers, _ = parsers_and_queries
+        if cs.SupportedLanguage.JS not in parsers:
+            pytest.skip("JavaScript parser not available")
+
+        code = "const cfg = { onClick: () => alert('hi') };"
+        root = parse_code(code, cs.SupportedLanguage.JS, parsers)
+        arrow_node = find_first_node_of_type(root, "arrow_function")
+        assert arrow_node is not None
+
+        result = definition_processor._extract_function_name(arrow_node)
+        assert result is None
+
 
 class TestGenerateAnonymousFunctionName:
     def test_iife_parenthesized(
