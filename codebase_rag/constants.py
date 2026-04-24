@@ -430,7 +430,7 @@ CYPHER_QUERY_EMBEDDINGS = (
     # LadybugDB has no integer id(n) — use qualified_name as the node_id.
     + """RETURN n.qualified_name AS node_id, n.qualified_name AS qualified_name,
        n.start_line AS start_line, n.end_line AS end_line,
-       m.path AS path
+       m.path AS path, n.docstring AS docstring
 """
 )
 

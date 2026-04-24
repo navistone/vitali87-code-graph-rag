@@ -611,6 +611,7 @@ class GraphUpdater:
                 start_line = parsed.get(cs.KEY_START_LINE)
                 end_line = parsed.get(cs.KEY_END_LINE)
                 file_path = parsed.get(cs.KEY_PATH)
+                docstring = parsed.get(cs.KEY_DOCSTRING)
 
                 if start_line is None or end_line is None or file_path is None:
                     logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
@@ -620,7 +621,14 @@ class GraphUpdater:
                     qualified_name, file_path, start_line, end_line
                 ):
                     try:
-                        embedding = embed_code(source_code)
+                        # Prepend docstring to source so semantic search
+                        # benefits from natural-language descriptions.
+                        embed_text = (
+                            f"# {docstring}\n{source_code}"
+                            if docstring
+                            else source_code
+                        )
+                        embedding = embed_code(embed_text)
                         batch_buffer.append((node_id, embedding, qualified_name))
                         expected_ids.add(node_id)
 
@@ -740,10 +748,12 @@ class GraphUpdater:
         end_line = row.get(cs.KEY_END_LINE)
         file_path = row.get(cs.KEY_PATH)
 
+        docstring = row.get(cs.KEY_DOCSTRING)
         return EmbeddingQueryResult(
             node_id=node_id,
             qualified_name=qualified_name,
             start_line=start_line if isinstance(start_line, int) else None,
             end_line=end_line if isinstance(end_line, int) else None,
             path=file_path if isinstance(file_path, str) else None,
+            docstring=docstring if isinstance(docstring, str) else None,
         )

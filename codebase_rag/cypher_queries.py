@@ -117,14 +117,16 @@ WHERE n.qualified_name = $node_id
 OPTIONAL MATCH (proj:Project)
 WHERE m.qualified_name STARTS WITH proj.name
 RETURN n.qualified_name AS qualified_name, n.start_line AS start_line,
-       n.end_line AS end_line, m.path AS path, proj.root_path AS root_path
+       n.end_line AS end_line, m.path AS path, proj.root_path AS root_path,
+       n.docstring AS docstring
 UNION
 MATCH (m:Module)-[:DEFINES]->(c:Class)-[:DEFINES_METHOD]->(n:Method)
 WHERE n.qualified_name = $node_id
 OPTIONAL MATCH (proj:Project)
 WHERE m.qualified_name STARTS WITH proj.name
 RETURN n.qualified_name AS qualified_name, n.start_line AS start_line,
-       n.end_line AS end_line, m.path AS path, proj.root_path AS root_path
+       n.end_line AS end_line, m.path AS path, proj.root_path AS root_path,
+       n.docstring AS docstring
 """
 
 CYPHER_FIND_BY_QUALIFIED_NAME = """
