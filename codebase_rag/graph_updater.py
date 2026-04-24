@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sys
+import time as _time
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, ItemsView, KeysView
 from pathlib import Path
@@ -275,6 +276,7 @@ class GraphUpdater:
         queries: dict[cs.SupportedLanguage, LanguageQueries],
         unignore_paths: frozenset[str] | None = None,
         exclude_paths: frozenset[str] | None = None,
+        progress_cb: Callable[[dict], None] | None = None,
     ):
         self.ingestor = ingestor
         self._single_file: Path | None = None
@@ -293,6 +295,7 @@ class GraphUpdater:
         self.ast_cache = BoundedASTCache()
         self.unignore_paths = unignore_paths
         self.exclude_paths = exclude_paths
+        self._progress_cb = progress_cb
 
         self.factory = ProcessorFactory(
             ingestor=self.ingestor,
@@ -306,6 +309,16 @@ class GraphUpdater:
             exclude_paths=self.exclude_paths,
         )
 
+    def _emit_progress(self, event: dict) -> None:
+        """Fire the progress callback safely — errors never abort indexing."""
+        if self._progress_cb is not None:
+            try:
+                self._progress_cb(event)
+            except Exception:
+                # Re-raise only CancelledError-style signals; swallow everything else
+                # so a buggy callback cannot break the index run.
+                raise
+
     def _is_dependency_file(self, file_name: str, filepath: Path) -> bool:
         return (
             file_name.lower() in cs.DEPENDENCY_FILES
@@ -313,6 +326,7 @@ class GraphUpdater:
         )
 
     def run(self, force: bool = False) -> None:
+        self._emit_progress({"phase": "discovering"})
         self.ingestor.ensure_node_batch(
             cs.NODE_PROJECT, {cs.KEY_NAME: self.project_name}
         )
@@ -331,12 +345,16 @@ class GraphUpdater:
         self.factory.definition_processor.process_all_method_overrides()
 
         logger.info(ls.ANALYSIS_COMPLETE)
+        self._emit_progress({"phase": "writing"})
         self.ingestor.flush_all()
 
         if settings.SKIP_EMBEDDINGS:
             logger.info("Embedding pass skipped (SKIP_EMBEDDINGS=true)")
+            self._emit_progress({"phase": "finalizing", "progress_pct": 98.0})
         else:
             self._generate_semantic_embeddings()
+
+        self._emit_progress({"phase": "done", "progress_pct": 100.0})
 
     def remove_file_from_state(self, file_path: Path) -> None:
         logger.debug(ls.REMOVING_STATE, path=file_path)
@@ -435,6 +453,9 @@ class GraphUpdater:
             logger.info(ls.INCREMENTAL_FORCE)
 
         eligible_files = self._collect_eligible_files()
+        # Emit discovery completion with total file count.
+        self._emit_progress({"phase": "discovering", "files_total": len(eligible_files)})
+
         new_hashes: FileHashCache = {}
         skipped_count = 0
         changed_count = 0
@@ -442,10 +463,15 @@ class GraphUpdater:
         current_file_keys: set[str] = set()
 
         processed_since_flush = 0
+        _total_files = len(eligible_files)
+        _files_scanned = 0  # all files seen (including skipped)
+        _last_cb_time = _time.monotonic()
+        _files_since_cb = 0
 
         for filepath in eligible_files:
             file_key = str(filepath.relative_to(self.repo_path))
             current_file_keys.add(file_key)
+            _files_scanned += 1
 
             current_hash = _hash_file(filepath)
             new_hashes[file_key] = current_hash
@@ -457,6 +483,17 @@ class GraphUpdater:
             ):
                 logger.debug(ls.FILE_HASH_UNCHANGED, path=file_key)
                 skipped_count += 1
+                _files_since_cb += 1
+                # Still emit progress so the bar moves even on skipped files.
+                _now = _time.monotonic()
+                if _files_since_cb >= 10 or (_now - _last_cb_time) >= 0.5:
+                    self._emit_progress({
+                        "phase": "parsing",
+                        "files_done": _files_scanned,
+                        "current_file": file_key,
+                    })
+                    _last_cb_time = _now
+                    _files_since_cb = 0
                 continue
 
             if file_key in old_hashes:
@@ -467,6 +504,17 @@ class GraphUpdater:
 
             changed_count += 1
             self._process_single_file(filepath)
+            _files_since_cb += 1
+
+            _now = _time.monotonic()
+            if _files_since_cb >= 10 or (_now - _last_cb_time) >= 0.5:
+                self._emit_progress({
+                    "phase": "parsing",
+                    "files_done": _files_scanned,
+                    "current_file": file_key,
+                })
+                _last_cb_time = _now
+                _files_since_cb = 0
 
             processed_since_flush += 1
             if processed_since_flush >= settings.FILE_FLUSH_INTERVAL:
@@ -544,13 +592,16 @@ class GraphUpdater:
                 return
 
             logger.info(ls.GENERATING_EMBEDDINGS, count=len(results))
+            self._emit_progress({"phase": "embedding", "files_total": len(results)})
 
             embedded_count = 0
             expected_ids: set[str] = set()
             batch_buffer: list[tuple[str, list[float], str]] = []
             batch_size = settings.VECTOR_BATCH_SIZE
+            _total_to_embed = max(len(results), 1)
+            _emit_interval = 50  # emit progress every N embeddings attempted
 
-            for row in results:
+            for _embed_idx, row in enumerate(results):
                 parsed = self._parse_embedding_result(row)
                 if parsed is None:
                     continue
@@ -586,6 +637,15 @@ class GraphUpdater:
                                 done=embedded_count,
                                 total=len(results),
                             )
+
+                        # Emit per-batch progress every _emit_interval embeddings.
+                        if (_embed_idx + 1) % _emit_interval == 0:
+                            _pct = 70.0 + ((_embed_idx + 1) / _total_to_embed) * 28.0
+                            self._emit_progress({
+                                "phase": "embedding",
+                                "files_done": _embed_idx + 1,
+                                "progress_pct": min(97.9, _pct),
+                            })
 
                     except Exception as e:
                         logger.warning(
