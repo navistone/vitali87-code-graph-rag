@@ -29,16 +29,15 @@ keywords = [
     "graph-database",
     "semantic-search",
     "codebase",
-    "memgraph",
     "developer-tools",
     "monorepo",
 ]
 dependencies = [
     "loguru>=0.7.3",
     "mcp>=1.21.1",
+    "numpy>=1.26.0",
     "pydantic-ai>=1.27.0",
     "pydantic-settings>=2.0.0",
-    "pymgclient>=1.4.0",
     "python-dotenv>=1.1.0",
     "toml>=0.10.2",
     "tree-sitter-python>=0.23.6",

@@ -212,21 +212,17 @@ def mock_updater(temp_repo: Path, mock_ingestor: MagicMock) -> MagicMock:
     return mock
 
 
-@pytest.fixture(scope="session", autouse=True)
-def cleanup_qdrant_client() -> Generator[None, None, None]:
+@pytest.fixture(autouse=True)
+def _clear_vector_store_pending() -> Generator[None, None, None]:
+    """Reset the in-memory embedding accumulator before each test.
+
+    ``codebase_rag.vector_store._pending`` is a module-level dict that
+    accumulates embeddings across calls.  Without this fixture, embeddings
+    stored in one test bleed into the next, causing false positives in empty-db
+    assertions.
+    """
+    import codebase_rag.vector_store as _vs
+    _vs._pending.clear()
     yield
+    _vs._pending.clear()
 
-    try:
-        from codebase_rag.utils.dependencies import has_qdrant_client
-
-        if has_qdrant_client():
-            import codebase_rag.vector_store as vs
-
-            if vs._CLIENT is not None:
-                try:
-                    vs._CLIENT.close()
-                except Exception:
-                    pass
-                vs._CLIENT = None
-    except Exception:
-        pass

@@ -243,7 +243,7 @@ class AppConfig(BaseSettings):
         }
     )
 
-    # Embedding / vector search settings (replaces Qdrant — now LadybugDB native)
+    # Embedding / vector search settings (numpy sidecar store)
     # Set SKIP_EMBEDDINGS=true to skip the embedding pass entirely.  Useful on
     # machines where loading the UniXcoder model (torch + transformers, ~400MB)
     # would cause OOM kills.  The structural graph is fully populated either

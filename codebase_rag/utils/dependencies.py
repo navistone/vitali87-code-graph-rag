@@ -27,20 +27,11 @@ def has_transformers() -> bool:
     return _check_dependency(MODULE_TRANSFORMERS)
 
 
-def has_qdrant_client() -> bool:
-    """Deprecated: Qdrant was replaced by LadybugDB native vector indexes.
-
-    Always returns False. Kept only for any external callers that may check
-    for the old Qdrant-backed optional dependency group.
-    """
-    return False
-
-
 def has_semantic_dependencies() -> bool:
     """Return True when UniXcoder embedding dependencies are available.
 
-    Requires only ``torch`` and ``transformers`` — ``qdrant_client`` was
-    removed when the vector store was migrated to LadybugDB native indexes.
+    Requires ``torch`` and ``transformers`` only.  Qdrant was removed in the
+    LadybugDB migration and is no longer a dependency.
     """
     return has_torch() and has_transformers()
 

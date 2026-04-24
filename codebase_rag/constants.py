@@ -952,12 +952,9 @@ TEXT_UNKNOWN = "unknown"
 
 MODULE_TORCH = "torch"
 MODULE_TRANSFORMERS = "transformers"
-# MODULE_QDRANT_CLIENT is kept as a string constant for backward compatibility
-# with any external callers; the qdrant-client package itself has been removed.
-MODULE_QDRANT_CLIENT = "qdrant_client"
 
-# LadybugDB native vector indexes replaced Qdrant — semantic deps are now
-# only the embedding model stack (torch + transformers).
+# Semantic dependencies: torch + transformers (UniXcoder model stack).
+# Qdrant was removed in the LadybugDB migration; qdrant-client is no longer installed.
 SEMANTIC_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 
