@@ -620,6 +620,47 @@ class GraphUpdater:
                 if source_code := self._extract_source_code(
                     qualified_name, file_path, start_line, end_line
                 ):
+                    # Skip trivial functions — inline arrows, 1-line setters,
+                    # stub/mock helpers, empty-state placeholders. Their
+                    # embeddings are near-uniform and crowd real application
+                    # code out of top-k results for any natural-language
+                    # query. Thresholds:
+                    #   <150 non-whitespace chars OR <5 non-blank lines →
+                    #     too trivial (covers `emptyTask`-style React
+                    #     placeholders, one-line setters, stubs)
+                    #   anonymous_LINE_COL pattern → tree-sitter parser
+                    #     fallback for unnamed callbacks (always trivial)
+                    #   duplicated trailing segments (e.g.
+                    #     `useHook.useHook.connect.connect`) → inner-scope
+                    #     closure wrappers the parser emits; always trivial
+                    _stripped = "".join(source_code.split())
+                    _nonblank_lines = [
+                        ln for ln in source_code.splitlines() if ln.strip()
+                    ]
+                    import re as _re_anon
+                    _is_anon = bool(
+                        _re_anon.search(
+                            r"\banonymous_\d+_\d+\b", qualified_name
+                        )
+                    )
+                    _parts = qualified_name.split(".")
+                    _dup_tail = (
+                        len(_parts) >= 2 and _parts[-1] == _parts[-2]
+                    )
+                    if (
+                        _is_anon
+                        or _dup_tail
+                        or len(_stripped) < 150
+                        or len(_nonblank_lines) < 5
+                    ):
+                        logger.debug(
+                            "Skipping trivial function embedding",
+                            name=qualified_name,
+                            chars=len(_stripped),
+                            lines=len(_nonblank_lines),
+                        )
+                        continue
+
                     try:
                         # Prepend docstring to source so semantic search
                         # benefits from natural-language descriptions.
