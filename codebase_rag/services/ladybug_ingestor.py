@@ -345,9 +345,14 @@ class LadybugIngestor:
         )
         self._rel_count += 1
         if self._rel_count >= self.batch_size:
-            logger.debug(ls.MG_REL_BUFFER_FLUSH, size=self.batch_size)
+            # Flush pending nodes early so they accumulate in the DB, but do
+            # NOT flush relationships here.  Relationships reference nodes from
+            # files that haven't been parsed yet — flushing them mid-ingestion
+            # produces "unordered_map::at: key not found" because the target
+            # node doesn't exist in LadybugDB yet.  Relationships are flushed
+            # in bulk by flush_all() after every node has been committed.
+            logger.debug(ls.MG_NODE_BUFFER_FLUSH, size=self.batch_size)
             self.flush_nodes()
-            self.flush_relationships()
 
     def flush_relationships(self) -> None:
         """Flush buffered relationships via grouped UNWIND batches.
@@ -396,9 +401,15 @@ class LadybugIngestor:
                 by_shape[shape].append(entry)
 
             for prop_keys, batch_rows in by_shape.items():
+                # Use two sequential MATCH clauses instead of comma-separated
+                # MATCH (a), (b). The comma pattern triggers a Kuzu hash-join
+                # that uses an internal unordered_map which may not include
+                # nodes inserted in prior execute() calls on the same connection,
+                # producing "unordered_map::at: key not found". Sequential MATCHes
+                # perform two independent index lookups and avoid the hash join.
                 match_clause = (
-                    f"MATCH (a:{from_label} {{{from_key}: row.from_val}}), "
-                    f"(b:{to_label} {{{to_key}: row.to_val}})"
+                    f"MATCH (a:{from_label} {{{from_key}: row.from_val}})\n"
+                    f"MATCH (b:{to_label} {{{to_key}: row.to_val}})"
                 )
                 if self._use_merge:
                     if prop_keys:
