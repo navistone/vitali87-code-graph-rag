@@ -149,7 +149,6 @@ V1_PATH = "/v1"
 # (H) HTTP status codes
 HTTP_OK = 200
 
-UNIXCODER_MODEL = "microsoft/unixcoder-base"
 CODERANK_EMBED_MODEL = "nomic-ai/CodeRankEmbed"
 CODERANK_CODE_PREFIX = "Represent this code snippet: "
 CODERANK_QUERY_PREFIX = "search_query: "
@@ -960,16 +959,6 @@ MODULE_QDRANT_CLIENT = "qdrant_client"
 SEMANTIC_DEPENDENCIES = (MODULE_QDRANT_CLIENT, MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 
-
-class UniXcoderMode(StrEnum):
-    ENCODER_ONLY = "<encoder-only>"
-    DECODER_ONLY = "<decoder-only>"
-    ENCODER_DECODER = "<encoder-decoder>"
-
-
-UNIXCODER_MASK_TOKEN = "<mask0>"
-UNIXCODER_BUFFER_BIAS = "bias"
-UNIXCODER_MAX_CONTEXT = 1024
 
 REL_TYPE_CALLS = "CALLS"
 
