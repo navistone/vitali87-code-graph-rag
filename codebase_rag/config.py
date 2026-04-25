@@ -249,7 +249,7 @@ class AppConfig(BaseSettings):
     QDRANT_UPSERT_RETRIES: int = Field(default=3, gt=0)
     QDRANT_RETRY_BASE_DELAY: float = Field(default=0.5, gt=0)
     QDRANT_BATCH_SIZE: int = Field(default=50, gt=0)
-    EMBEDDING_MAX_LENGTH: int = 512
+    EMBEDDING_MAX_LENGTH: int = 8192
     EMBEDDING_PROGRESS_INTERVAL: int = 10
 
     FLUSH_THREAD_POOL_SIZE: int = Field(default=4, gt=0)

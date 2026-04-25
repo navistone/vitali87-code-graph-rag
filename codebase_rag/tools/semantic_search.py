@@ -22,11 +22,11 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
 
     try:
         from ..config import settings
-        from ..embedder import embed_code
+        from ..embedder import embed_query
         from ..services.graph_service import MemgraphIngestor
         from ..vector_store import search_embeddings
 
-        query_embedding = embed_code(query)
+        query_embedding = embed_query(query)
 
         search_results = search_embeddings(query_embedding, top_k=top_k)
 

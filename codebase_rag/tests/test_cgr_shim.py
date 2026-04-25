@@ -20,6 +20,11 @@ class TestCgrShimExports:
 
         assert cgr.embed_code is embed_code
 
+    def test_embed_query_is_canonical_function(self) -> None:
+        from codebase_rag.embedder import embed_query
+
+        assert cgr.embed_query is embed_query
+
     def test_graph_loader_is_canonical_class(self) -> None:
         from codebase_rag.graph_loader import GraphLoader
 

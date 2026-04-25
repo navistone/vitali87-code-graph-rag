@@ -150,6 +150,9 @@ V1_PATH = "/v1"
 HTTP_OK = 200
 
 UNIXCODER_MODEL = "microsoft/unixcoder-base"
+CODERANK_EMBED_MODEL = "nomic-ai/CodeRankEmbed"
+CODERANK_CODE_PREFIX = "Represent this code snippet: "
+CODERANK_QUERY_PREFIX = "search_query: "
 EMBEDDING_DEFAULT_BATCH_SIZE = 32
 EMBEDDING_CACHE_FILENAME = ".embedding_cache.json"
 

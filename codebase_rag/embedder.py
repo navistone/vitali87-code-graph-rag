@@ -95,16 +95,48 @@ if has_torch() and has_transformers():
     import numpy as np
     import torch
     from numpy.typing import NDArray
-
-    from .unixcoder import UniXcoder
+    from transformers import AutoModel, AutoTokenizer
 
     @lru_cache(maxsize=1)
-    def get_model() -> UniXcoder:
-        model = UniXcoder(cs.UNIXCODER_MODEL)
+    def get_model() -> tuple[AutoTokenizer, AutoModel]:
+        tokenizer = AutoTokenizer.from_pretrained(
+            cs.CODERANK_EMBED_MODEL, trust_remote_code=True
+        )
+        model = AutoModel.from_pretrained(
+            cs.CODERANK_EMBED_MODEL,
+            trust_remote_code=True,
+            safe_serialization=True,
+        )
         model.eval()
         if torch.cuda.is_available():
             model = model.cuda()
-        return model
+        return tokenizer, model
+
+    def _mean_pool(
+        token_embeddings: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * mask_expanded, 1) / torch.clamp(
+            mask_expanded.sum(1), min=1e-9
+        )
+
+    def _embed_texts(texts: list[str], max_length: int) -> list[list[float]]:
+        tokenizer, model = get_model()
+        device = next(model.parameters()).device
+        encoded = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+        with torch.no_grad():
+            output = model(**encoded)
+        embeddings = _mean_pool(output.last_hidden_state, encoded["attention_mask"])
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        result: NDArray[np.float32] = embeddings.cpu().numpy()
+        return result.tolist()
 
     def embed_code(code: str, max_length: int | None = None) -> list[float]:
         cache = get_embedding_cache()
@@ -113,17 +145,14 @@ if has_torch() and has_transformers():
 
         if max_length is None:
             max_length = settings.EMBEDDING_MAX_LENGTH
-        model = get_model()
-        device = next(model.parameters()).device
-        tokens = model.tokenize([code], max_length=max_length)
-        tokens_tensor = torch.tensor(tokens).to(device)
-        with torch.no_grad():
-            _, sentence_embeddings = model(tokens_tensor)
-            embedding: NDArray[np.float32] = sentence_embeddings.cpu().numpy()
-        result: list[float] = embedding[0].tolist()
-
+        result = _embed_texts([cs.CODERANK_CODE_PREFIX + code], max_length)[0]
         cache.put(code, result)
         return result
+
+    def embed_query(query: str, max_length: int | None = None) -> list[float]:
+        if max_length is None:
+            max_length = settings.EMBEDDING_MAX_LENGTH
+        return _embed_texts([cs.CODERANK_QUERY_PREFIX + query], max_length)[0]
 
     def embed_code_batch(
         snippets: list[str],
@@ -146,19 +175,11 @@ if has_torch() and has_transformers():
         uncached_indices = [i for i in range(len(snippets)) if i not in cached_results]
         uncached_snippets = [snippets[i] for i in uncached_indices]
 
-        model = get_model()
-        device = next(model.parameters()).device
-
         all_new_embeddings: list[list[float]] = []
         for start in range(0, len(uncached_snippets), batch_size):
             batch = uncached_snippets[start : start + batch_size]
-            tokens_list = model.tokenize(batch, max_length=max_length, padding=True)
-            tokens_tensor = torch.tensor(tokens_list).to(device)
-            with torch.no_grad():
-                _, sentence_embeddings = model(tokens_tensor)
-                batch_np: NDArray[np.float32] = sentence_embeddings.cpu().numpy()
-            for row in batch_np:
-                all_new_embeddings.append(row.tolist())
+            prefixed = [cs.CODERANK_CODE_PREFIX + s for s in batch]
+            all_new_embeddings.extend(_embed_texts(prefixed, max_length))
 
         cache.put_many(uncached_snippets, all_new_embeddings)
 
@@ -173,6 +194,9 @@ if has_torch() and has_transformers():
 else:
 
     def embed_code(code: str, max_length: int | None = None) -> list[float]:
+        raise RuntimeError(ex.SEMANTIC_EXTRA)
+
+    def embed_query(query: str, max_length: int | None = None) -> list[float]:
         raise RuntimeError(ex.SEMANTIC_EXTRA)
 
     def embed_code_batch(
