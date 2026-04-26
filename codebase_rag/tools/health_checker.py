@@ -3,8 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-import mgclient  # ty: ignore[unresolved-import]
-from loguru import logger
+import real_ladybug as lb
 
 from .. import constants as cs
 from ..config import settings
@@ -62,53 +61,28 @@ class HealthChecker:
                 error=str(e),
             )
 
-    def check_memgraph_connection(self) -> HealthCheckResult:
-        conn = None
-        cursor = None
+    def check_ladybugdb_connection(self) -> HealthCheckResult:
+        """Check LadybugDB connectivity (replaces check_memgraph_connection)."""
+        import os
+        db_path = settings.LADYBUG_DB_PATH
         try:
-            conn = mgclient.connect(
-                host=settings.MEMGRAPH_HOST,
-                port=settings.MEMGRAPH_PORT,
-            )
-
-            cursor = conn.cursor()
-            cursor.execute(cs.HEALTH_CHECK_MEMGRAPH_QUERY)
-            list(cursor.fetchall())
-
+            os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
+            db = lb.Database(db_path)
+            conn = lb.Connection(db)
+            result = conn.execute("RETURN 1 AS ping")
+            result.has_next()
             return HealthCheckResult(
                 name=cs.HEALTH_CHECK_MEMGRAPH_SUCCESSFUL,
                 passed=True,
-                message=cs.HEALTH_CHECK_MEMGRAPH_CONNECTED_MSG.format(
-                    host=settings.MEMGRAPH_HOST,
-                    port=settings.MEMGRAPH_PORT,
-                ),
-            )
-
-        except mgclient.MemgraphError as e:
-            return HealthCheckResult(
-                name=cs.HEALTH_CHECK_MEMGRAPH_FAILED,
-                passed=False,
-                message=cs.HEALTH_CHECK_MEMGRAPH_CONNECTION_FAILED_MSG,
-                error=cs.HEALTH_CHECK_MEMGRAPH_ERROR.format(error=str(e)),
+                message=f"LadybugDB connected: {db_path}",
             )
         except Exception as e:
             return HealthCheckResult(
                 name=cs.HEALTH_CHECK_MEMGRAPH_FAILED,
                 passed=False,
-                message=cs.HEALTH_CHECK_MEMGRAPH_UNEXPECTED_FAILURE_MSG,
+                message="LadybugDB connection failed",
                 error=str(e),
             )
-        finally:
-            if cursor is not None:
-                try:
-                    cursor.close()
-                except Exception as e:
-                    logger.warning(f"Failed to close Memgraph cursor: {e}")
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception as e:
-                    logger.warning(f"Failed to close Memgraph connection: {e}")
 
     def check_api_key(self, env_name: str, display_name: str) -> HealthCheckResult:
         value = os.getenv(env_name) or getattr(settings, env_name, None)
@@ -186,7 +160,7 @@ class HealthChecker:
     def run_all_checks(self) -> list[HealthCheckResult]:
         self.results = []
         self.results.append(self.check_docker())
-        self.results.append(self.check_memgraph_connection())
+        self.results.append(self.check_ladybugdb_connection())
         self.results.extend(self.check_api_keys())
         for tool_name, cmd in cs.HEALTH_CHECK_EXTERNAL_TOOLS:
             self.results.append(self.check_external_tool(tool_name, cmd))

@@ -1,3 +1,8 @@
+"""Tests for GraphUpdater._parse_embedding_result.
+
+Updated for LadybugDB (CI-5): node_id is now a string (qualified_name)
+instead of an integer id(n), since LadybugDB has no auto-increment IDs.
+"""
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -23,7 +28,7 @@ def graph_updater(temp_repo: Path, mock_ingestor: MagicMock) -> GraphUpdater:
 class TestParseEmbeddingResult:
     def test_valid_input_all_fields(self, graph_updater: GraphUpdater) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 42,
+            cs.KEY_NODE_ID: "myproject.module.func",
             cs.KEY_QUALIFIED_NAME: "myproject.module.func",
             cs.KEY_START_LINE: 10,
             cs.KEY_END_LINE: 20,
@@ -33,7 +38,7 @@ class TestParseEmbeddingResult:
         result = graph_updater._parse_embedding_result(row)
 
         assert result is not None
-        assert result[cs.KEY_NODE_ID] == 42
+        assert result[cs.KEY_NODE_ID] == "myproject.module.func"
         assert result[cs.KEY_QUALIFIED_NAME] == "myproject.module.func"
         assert result[cs.KEY_START_LINE] == 10
         assert result[cs.KEY_END_LINE] == 20
@@ -43,14 +48,14 @@ class TestParseEmbeddingResult:
         self, graph_updater: GraphUpdater
     ) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 1,
+            cs.KEY_NODE_ID: "pkg.func",
             cs.KEY_QUALIFIED_NAME: "pkg.func",
         }
 
         result = graph_updater._parse_embedding_result(row)
 
         assert result is not None
-        assert result[cs.KEY_NODE_ID] == 1
+        assert result[cs.KEY_NODE_ID] == "pkg.func"
         assert result[cs.KEY_QUALIFIED_NAME] == "pkg.func"
         assert result[cs.KEY_START_LINE] is None
         assert result[cs.KEY_END_LINE] is None
@@ -70,7 +75,7 @@ class TestParseEmbeddingResult:
         self, graph_updater: GraphUpdater
     ) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 42,
+            cs.KEY_NODE_ID: "pkg.func",
             cs.KEY_START_LINE: 5,
         }
 
@@ -78,9 +83,10 @@ class TestParseEmbeddingResult:
 
         assert result is None
 
-    def test_node_id_not_int_returns_none(self, graph_updater: GraphUpdater) -> None:
+    def test_node_id_not_str_returns_none(self, graph_updater: GraphUpdater) -> None:
+        """LadybugDB: node_id must be a string (qualified_name); int → None."""
         row: ResultRow = {
-            cs.KEY_NODE_ID: "not_an_int",
+            cs.KEY_NODE_ID: 42,  # integer — not valid for LadybugDB
             cs.KEY_QUALIFIED_NAME: "pkg.func",
         }
 
@@ -92,7 +98,7 @@ class TestParseEmbeddingResult:
         self, graph_updater: GraphUpdater
     ) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 42,
+            cs.KEY_NODE_ID: "pkg.func",
             cs.KEY_QUALIFIED_NAME: 12345,
         }
 
@@ -102,7 +108,7 @@ class TestParseEmbeddingResult:
 
     def test_start_line_not_int_becomes_none(self, graph_updater: GraphUpdater) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 42,
+            cs.KEY_NODE_ID: "pkg.func",
             cs.KEY_QUALIFIED_NAME: "pkg.func",
             cs.KEY_START_LINE: "ten",
             cs.KEY_END_LINE: 20,
@@ -116,7 +122,7 @@ class TestParseEmbeddingResult:
 
     def test_end_line_not_int_becomes_none(self, graph_updater: GraphUpdater) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 42,
+            cs.KEY_NODE_ID: "pkg.func",
             cs.KEY_QUALIFIED_NAME: "pkg.func",
             cs.KEY_START_LINE: 10,
             cs.KEY_END_LINE: "twenty",
@@ -130,7 +136,7 @@ class TestParseEmbeddingResult:
 
     def test_path_not_str_becomes_none(self, graph_updater: GraphUpdater) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 42,
+            cs.KEY_NODE_ID: "pkg.func",
             cs.KEY_QUALIFIED_NAME: "pkg.func",
             cs.KEY_PATH: 12345,
         }
@@ -163,7 +169,7 @@ class TestParseEmbeddingResult:
         self, graph_updater: GraphUpdater
     ) -> None:
         row: ResultRow = {
-            cs.KEY_NODE_ID: 1,
+            cs.KEY_NODE_ID: "test.func",
             cs.KEY_QUALIFIED_NAME: "test.func",
         }
 
@@ -171,7 +177,7 @@ class TestParseEmbeddingResult:
 
         assert result is not None
         expected: EmbeddingQueryResult = {
-            "node_id": 1,
+            "node_id": "test.func",
             "qualified_name": "test.func",
             "start_line": None,
             "end_line": None,

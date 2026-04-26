@@ -1,18 +1,27 @@
+"""Legacy MemgraphIngestor tests — skipped after LadybugDB swap (CI-4).
+
+These tests were written against the mgclient/Bolt-protocol implementation.
+The graph_service module is now a thin compatibility shim re-exporting
+LadybugIngestor.  New tests live in test_ladybug_ingestor.py.
+"""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codebase_rag.constants import NODE_UNIQUE_CONSTRAINTS
-from codebase_rag.cypher_queries import (
+# Skip the entire module — tests reference mgclient internals that no longer exist.
+pytestmark = pytest.mark.skip(reason="Legacy Memgraph/mgclient tests — superseded by LadybugDB (CI-4)")
+
+from codebase_rag.constants import NODE_UNIQUE_CONSTRAINTS  # noqa: E402
+from codebase_rag.cypher_queries import (  # noqa: E402
     build_create_node_query,
     build_create_relationship_query,
     build_merge_node_query,
     build_merge_relationship_query,
     wrap_with_unwind,
 )
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.graph_service import MemgraphIngestor  # noqa: E402
 
 
 class TestMemgraphIngestorInit:

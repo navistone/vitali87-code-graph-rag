@@ -29,13 +29,13 @@ keywords = [
     "graph-database",
     "semantic-search",
     "codebase",
-    "memgraph",
     "developer-tools",
     "monorepo",
 ]
 dependencies = [
     "loguru>=0.7.3",
     "mcp>=1.21.1",
+    "numpy>=1.26.0",
     "pydantic-ai>=1.27.0",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.1.0",
@@ -51,6 +51,7 @@ dependencies = [
     "protobuf>=5.27.0",
     "defusedxml>=0.7.1",
     "huggingface-hub[hf-xet]>=0.36.0",
+    "real-ladybug>=0.15.3",
 ]
 
 [project.scripts]
@@ -60,8 +61,9 @@ cgr = "codebase_rag.cli:app"
 [tool.uv]
 package = true
 
-[tool.setuptools]
-packages = ["codebase_rag", "codec", "cgr"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codebase_rag*", "codec*", "cgr*"]
 
 [project.optional-dependencies]
 test = [
@@ -85,6 +87,9 @@ treesitter-full = [
 ]
 
 semantic = [
+    # v5.3: DuckDB replaces both Qdrant (removed CI-5) and the LadybugDB native
+    # VECTOR extension (rejected per v5.3 §17.2 — extension-loading vs
+    # schema-validation circular dependency on restart).
     "duckdb>=1.1.0",
     "torch>=2.6.0",
     "transformers>=4.0.0",
@@ -144,6 +149,8 @@ dev = [
     "pre-commit>=4.2.0",
     "pyinstaller>=6.14.1",
     "pylint>=4.0.4",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
     "radon>=6.0.1",
     "ruff>=0.5.5",
     "semgrep>=1.79.0",

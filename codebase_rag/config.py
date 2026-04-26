@@ -140,16 +140,16 @@ class AppConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        # Ignore unknown env vars so this config can coexist with the
+        # code-indexer-service .env (which adds GITHUB_TOKEN and friends).
+        # Without this, any field the HTTP gateway declares breaks our load.
         extra="ignore",
     )
 
-    MEMGRAPH_HOST: str = "localhost"
-    MEMGRAPH_PORT: int = 7687
-    MEMGRAPH_HTTP_PORT: int = 7444
-    MEMGRAPH_USERNAME: str | None = None
-    MEMGRAPH_PASSWORD: str | None = None
-    LAB_PORT: int = 3000
-    MEMGRAPH_BATCH_SIZE: int = 1000
+    # LadybugDB (replaces Memgraph — embedded, no Docker)
+    LADYBUG_DB_PATH: str = ".cgr/graph.db"
+    LADYBUG_BATCH_SIZE: int = 1000
+
     AGENT_RETRIES: int = 3
     ORCHESTRATOR_OUTPUT_RETRIES: int = 100
 
@@ -243,14 +243,21 @@ class AppConfig(BaseSettings):
         }
     )
 
-    QDRANT_DB_PATH: str = "./.qdrant_code_embeddings"
-    QDRANT_COLLECTION_NAME: str = "code_embeddings"
-    QDRANT_VECTOR_DIM: int = 768
-    QDRANT_TOP_K: int = 5
-    QDRANT_UPSERT_RETRIES: int = Field(default=3, gt=0)
-    QDRANT_RETRY_BASE_DELAY: float = Field(default=0.5, gt=0)
-    QDRANT_BATCH_SIZE: int = Field(default=50, gt=0)
-    EMBEDDING_MAX_LENGTH: int = 8192
+    # Embedding / vector search settings (DuckDB store, v5.3)
+    # Set SKIP_EMBEDDINGS=true to skip the embedding pass entirely.  Useful
+    # when callers (e.g. code-indexer-service) drive embedding in a separate
+    # subprocess that writes to the per-repo .duck file directly.  The
+    # structural graph is fully populated either way; only semantic / vector
+    # search is affected.
+    SKIP_EMBEDDINGS: bool = Field(False, validation_alias="SKIP_EMBEDDINGS")
+
+    VECTOR_TOP_K: int = 5
+    VECTOR_BATCH_SIZE: int = Field(default=50, gt=0)
+    VECTOR_UPSERT_RETRIES: int = Field(default=3, gt=0)
+    VECTOR_RETRY_BASE_DELAY: float = Field(default=0.5, gt=0)
+    # Cache directory reuses the LadybugDB parent dir for locality
+    EMBEDDING_CACHE_DIR: str = ".cgr"
+    EMBEDDING_MAX_LENGTH: int = 512
     EMBEDDING_PROGRESS_INTERVAL: int = 10
 
     FLUSH_THREAD_POOL_SIZE: int = Field(default=4, gt=0)
@@ -331,7 +338,7 @@ class AppConfig(BaseSettings):
         return provider.lower(), model
 
     def resolve_batch_size(self, batch_size: int | None) -> int:
-        resolved = self.MEMGRAPH_BATCH_SIZE if batch_size is None else batch_size
+        resolved = self.LADYBUG_BATCH_SIZE if batch_size is None else batch_size
         if resolved < 1:
             raise ValueError(ex.BATCH_SIZE_POSITIVE)
         return resolved
@@ -355,11 +362,15 @@ def load_cgrignore_patterns(repo_path: Path) -> CgrignorePatterns:
     try:
         with ignore_file.open(encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                # Strip whitespace AND trailing slashes so entries like
+                # `.forge/` match both the directory and its descendants.
+                # Without this, `.forge/`.startswith(f"{p}/") becomes
+                # `.forge//` which matches nothing.
+                line = line.strip().rstrip("/")
                 if not line or line.startswith("#"):
                     continue
                 if line.startswith("!"):
-                    unignore.add(line[1:].strip())
+                    unignore.add(line[1:].strip().rstrip("/"))
                 else:
                     exclude.add(line)
         if exclude or unignore:

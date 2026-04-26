@@ -426,21 +426,25 @@ CSPROJ_SUFFIX = ".csproj"
 # (H) Cypher queries
 CYPHER_DEFAULT_LIMIT = 50
 
+# LadybugDB: use label union in MATCH clause — WHERE (n:A OR n:B) is not supported.
 _CYPHER_EMBEDDING_BASE = """
-MATCH (m:Module)-[:DEFINES]->(n)
-WHERE (n:Function OR n:Method)
-  AND m.qualified_name STARTS WITH ($project_name + '.')
+MATCH (m:Module)-[:DEFINES]->(n:Function|Method)
+WHERE m.qualified_name STARTS WITH ($project_name + '.')
 """
 
 CYPHER_QUERY_EMBEDDINGS = (
     _CYPHER_EMBEDDING_BASE
-    + """RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
+    # LadybugDB has no integer id(n) — use qualified_name as the node_id.
+    + """RETURN n.qualified_name AS node_id, n.qualified_name AS qualified_name,
        n.start_line AS start_line, n.end_line AS end_line,
        m.path AS path, n.docstring AS docstring
 """
 )
 
-CYPHER_QUERY_PROJECT_NODE_IDS = _CYPHER_EMBEDDING_BASE + "RETURN id(n) AS node_id\n"
+# LadybugDB: return qualified_name instead of id(n) for project node IDs.
+CYPHER_QUERY_PROJECT_NODE_IDS = (
+    _CYPHER_EMBEDDING_BASE + "RETURN n.qualified_name AS node_id\n"
+)
 
 
 class SupportedLanguage(StrEnum):
@@ -751,6 +755,7 @@ class TreeSitterModule(StrEnum):
     JAVA = "tree_sitter_java"
     CPP = "tree_sitter_cpp"
     LUA = "tree_sitter_lua"
+    CSHARP = "tree_sitter_c_sharp"
 
 
 # (H) Query dict keys
@@ -815,7 +820,7 @@ IGNORE_PATTERNS = frozenset(
         ".nyc_output",
         ".pnpm-store",
         ".pytest_cache",
-        ".qdrant_code_embeddings",
+        ".qdrant_code_embeddings",  # legacy Qdrant data dir — safe to skip if present
         ".ruff_cache",
         ".svn",
         ".tmp",
@@ -954,9 +959,10 @@ TEXT_UNKNOWN = "unknown"
 
 MODULE_TORCH = "torch"
 MODULE_TRANSFORMERS = "transformers"
-MODULE_QDRANT_CLIENT = "qdrant_client"
 
-SEMANTIC_DEPENDENCIES = (MODULE_QDRANT_CLIENT, MODULE_TORCH, MODULE_TRANSFORMERS)
+# Semantic dependencies: torch + transformers (UniXcoder model stack).
+# Qdrant was removed in the LadybugDB migration; qdrant-client is no longer installed.
+SEMANTIC_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 
 

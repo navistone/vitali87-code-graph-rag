@@ -68,11 +68,8 @@ def create_server() -> tuple[Server, MemgraphIngestor]:
     logger.info(lg.MCP_SERVER_INIT_SERVICES)
 
     ingestor = MemgraphIngestor(
-        host=settings.MEMGRAPH_HOST,
-        port=settings.MEMGRAPH_PORT,
-        batch_size=settings.MEMGRAPH_BATCH_SIZE,
-        username=settings.MEMGRAPH_USERNAME,
-        password=settings.MEMGRAPH_PASSWORD,
+        db_path=settings.LADYBUG_DB_PATH,
+        batch_size=settings.LADYBUG_BATCH_SIZE,
     )
 
     cypher_generator = CypherGenerator()
@@ -146,7 +143,7 @@ async def main() -> None:
     with ingestor:
         logger.info(
             lg.MCP_SERVER_CONNECTED.format(
-                host=settings.MEMGRAPH_HOST, port=settings.MEMGRAPH_PORT
+                host=settings.LADYBUG_DB_PATH, port="(embedded)"
             )
         )
         try:

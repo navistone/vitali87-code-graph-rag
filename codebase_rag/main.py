@@ -748,13 +748,13 @@ def _write_graph_json(ingestor: MemgraphIngestor, output_path: Path) -> GraphDat
 
 
 def connect_memgraph(batch_size: int) -> MemgraphIngestor:
-    return MemgraphIngestor(
-        host=settings.MEMGRAPH_HOST,
-        port=settings.MEMGRAPH_PORT,
-        batch_size=batch_size,
-        username=settings.MEMGRAPH_USERNAME,
-        password=settings.MEMGRAPH_PASSWORD,
-    )
+    """Connect to LadybugDB (replaces Memgraph — embedded, no Docker)."""
+    import os
+    db_path = settings.LADYBUG_DB_PATH
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return MemgraphIngestor(db_path=db_path, batch_size=batch_size)
 
 
 def export_graph_to_file(ingestor: MemgraphIngestor, output: str) -> bool:
