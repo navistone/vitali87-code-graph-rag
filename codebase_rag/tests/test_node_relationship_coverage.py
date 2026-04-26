@@ -1,6 +1,26 @@
+"""Test that every NodeLabel and RelationshipType is reachable through the
+LadybugIngestor flush path.
+
+Ported from the legacy MemgraphIngestor coverage test (M11 docs sync). The
+v5.3 fork uses LadybugDB as the embedded graph store, so the API differs:
+
+    * Constructor: ``LadybugIngestor(db_path=..., batch_size=..., use_merge=...)``
+    * Per-node writes go through ``self._execute_query(query, params)`` rather
+      than a ``cursor.execute(query)`` round-trip on a pymgclient cursor.
+    * Relationships are flushed in grouped UNWIND batches via
+      ``self._execute_batch``.
+    * Constraints are declared in the schema DDL via ``PRIMARY KEY``, so
+      ``ensure_constraints()`` is a no-op runtime hook (preserved for
+      interface parity with the old MemgraphIngestor consumers).
+
+The constants under test (``NodeLabel``, ``RelationshipType``,
+``_NODE_LABEL_UNIQUE_KEYS``, ``NODE_UNIQUE_CONSTRAINTS``, ``UniqueKeyType``,
+``NodeType``) are storage-engine independent — they describe the graph
+*shape* and are imported from ``codebase_rag.constants``.
+"""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -14,8 +34,37 @@ from codebase_rag.constants import (
     RelationshipType,
     UniqueKeyType,
 )
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 from codebase_rag.types_defs import NodeType
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_ingestor(tmp_path) -> LadybugIngestor:
+    """Build an ingestor without running the real LadybugDB migration.
+
+    The flush-coverage tests below patch ``_execute_query`` so the real
+    connection is never touched. Setting ``conn`` to a sentinel object is
+    enough to satisfy the connection-guard inside the public flush methods.
+    """
+    ingestor = LadybugIngestor(
+        db_path=str(tmp_path / "coverage.ladybug.db"),
+        batch_size=10,
+        use_merge=True,
+    )
+    # ``_execute_query`` raises when ``self.conn`` is None; patch path bypasses
+    # the call but the guard still runs in some helpers, so we hand it a
+    # sentinel rather than a real connection.
+    ingestor.conn = object()  # type: ignore[assignment]
+    return ingestor
+
+
+# ---------------------------------------------------------------------------
+# Constants integrity (storage-engine independent)
+# ---------------------------------------------------------------------------
 
 
 class TestNodeLabelCoverage:
@@ -83,68 +132,65 @@ class TestNodeLabelConstraintConsistency:
         )
 
 
+# ---------------------------------------------------------------------------
+# Flush coverage — every NodeLabel reachable through the public path
+# ---------------------------------------------------------------------------
+
+
 class TestFlushNodesForAllNodeLabels:
     @pytest.mark.parametrize("label", list(NodeLabel))
-    def test_each_node_label_can_be_flushed(self, label: NodeLabel) -> None:
-        ingestor = MemgraphIngestor(host="localhost", port=7687, batch_size=10)
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        ingestor.conn = mock_conn
-
+    def test_each_node_label_can_be_flushed(self, label: NodeLabel, tmp_path) -> None:
+        ingestor = _make_ingestor(tmp_path)
         unique_key = NODE_UNIQUE_CONSTRAINTS[label.value]
         node_props = {unique_key: f"test_{label.value}_id", KEY_NAME: "test"}
 
-        ingestor.node_buffer.append((label.value, node_props))
-        ingestor.flush_nodes()
+        with patch.object(LadybugIngestor, "_execute_query") as mock_exec:
+            ingestor.node_buffer.append((label.value, node_props))
+            ingestor.flush_nodes()
 
-        mock_cursor.execute.assert_called_once()
+        # One node → exactly one Cypher write through the LadybugDB executor.
+        mock_exec.assert_called_once()
         assert ingestor.node_buffer == []
 
     @pytest.mark.parametrize("node_type", list(NodeType))
-    def test_each_node_type_can_be_flushed(self, node_type: NodeType) -> None:
-        ingestor = MemgraphIngestor(host="localhost", port=7687, batch_size=10)
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        ingestor.conn = mock_conn
-
+    def test_each_node_type_can_be_flushed(self, node_type: NodeType, tmp_path) -> None:
+        ingestor = _make_ingestor(tmp_path)
         unique_key = NODE_UNIQUE_CONSTRAINTS[node_type.value]
         node_props = {unique_key: f"test_{node_type.value}_id", KEY_NAME: "test"}
 
-        ingestor.node_buffer.append((node_type.value, node_props))
-        ingestor.flush_nodes()
+        with patch.object(LadybugIngestor, "_execute_query") as mock_exec:
+            ingestor.node_buffer.append((node_type.value, node_props))
+            ingestor.flush_nodes()
 
-        mock_cursor.execute.assert_called_once()
+        mock_exec.assert_called_once()
         assert ingestor.node_buffer == []
 
 
 class TestFlushRelationshipsForAllTypes:
     @pytest.mark.parametrize("rel_type", list(RelationshipType))
     def test_each_relationship_type_can_be_flushed(
-        self, rel_type: RelationshipType
+        self, rel_type: RelationshipType, tmp_path
     ) -> None:
-        ingestor = MemgraphIngestor(host="localhost", port=7687, batch_size=10)
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.fetchall.return_value = [(1,)]
+        ingestor = _make_ingestor(tmp_path)
 
-        col = MagicMock()
-        col.name = "created"
-        mock_cursor.description = [col]
+        # LadybugIngestor groups relationships by (pattern, prop-shape) and
+        # flushes them as a single UNWIND batch through ``_execute_batch``.
+        # We patch that boundary to assert exactly one batched write fires.
+        with patch.object(LadybugIngestor, "_execute_batch") as mock_batch:
+            ingestor.ensure_relationship_batch(
+                (NodeLabel.MODULE.value, KEY_QUALIFIED_NAME, "module.test"),
+                rel_type.value,
+                (NodeLabel.FUNCTION.value, KEY_QUALIFIED_NAME, "module.test.func"),
+            )
+            ingestor.flush_relationships()
 
-        ingestor.conn = mock_conn
-
-        ingestor.ensure_relationship_batch(
-            (NodeLabel.MODULE.value, KEY_QUALIFIED_NAME, "module.test"),
-            rel_type.value,
-            (NodeLabel.FUNCTION.value, KEY_QUALIFIED_NAME, "module.test.func"),
-        )
-        ingestor.flush_relationships()
-
-        mock_cursor.execute.assert_called_once()
+        mock_batch.assert_called_once()
         assert ingestor._rel_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Property-name correctness
+# ---------------------------------------------------------------------------
 
 
 class TestUniqueKeyPropertyNames:
@@ -165,6 +211,11 @@ class TestUniqueKeyPropertyNames:
             key = _NODE_LABEL_UNIQUE_KEYS[label]
             if key == UniqueKeyType.QUALIFIED_NAME:
                 assert NODE_UNIQUE_CONSTRAINTS[label.value] == KEY_QUALIFIED_NAME
+
+
+# ---------------------------------------------------------------------------
+# Enum completeness
+# ---------------------------------------------------------------------------
 
 
 class TestNodeLabelEnumCompleteness:
@@ -203,68 +254,52 @@ class TestRelationshipTypeCompleteness:
             )
 
 
+# ---------------------------------------------------------------------------
+# Defensive flush: missing unique key must skip rather than crash
+# ---------------------------------------------------------------------------
+
+
 class TestNodeBufferFlushWithMissingKey:
     @pytest.mark.parametrize("label", list(NodeLabel))
     def test_node_without_unique_key_is_skipped_not_crashed(
-        self, label: NodeLabel
+        self, label: NodeLabel, tmp_path
     ) -> None:
-        ingestor = MemgraphIngestor(host="localhost", port=7687, batch_size=10)
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        ingestor.conn = mock_conn
-
+        ingestor = _make_ingestor(tmp_path)
         node_props = {KEY_NAME: "test_without_unique_key"}
 
-        ingestor.node_buffer.append((label.value, node_props))
-        ingestor.flush_nodes()
+        with patch.object(LadybugIngestor, "_execute_query") as mock_exec:
+            ingestor.node_buffer.append((label.value, node_props))
+            ingestor.flush_nodes()
 
+        # Buffer must be drained even when every row in it was skipped.
         assert ingestor.node_buffer == []
+        # If KEY_NAME happens to be the unique key for this label, the row
+        # is valid; otherwise it gets logged + skipped without an execute.
+        unique_key = NODE_UNIQUE_CONSTRAINTS[label.value]
+        if unique_key != KEY_NAME:
+            mock_exec.assert_not_called()
 
 
-class TestEnsureConstraintsForAllLabels:
-    def test_ensure_constraints_creates_all_constraints(self) -> None:
-        ingestor = MemgraphIngestor(host="localhost", port=7687)
-        executed_queries: list[str] = []
+# ---------------------------------------------------------------------------
+# ensure_constraints — LadybugDB declares constraints in the schema DDL,
+# so the runtime hook is intentionally a no-op (preserved for interface
+# parity with consumers that still call it).
+# ---------------------------------------------------------------------------
 
-        def capture_query(query: str, params: object = None) -> list[object]:
-            executed_queries.append(query)
-            return []
 
-        with patch.object(
-            MemgraphIngestor, "_execute_query", side_effect=capture_query
-        ):
+class TestEnsureConstraintsIsNoOp:
+    def test_ensure_constraints_does_not_execute_runtime_queries(self, tmp_path) -> None:
+        ingestor = _make_ingestor(tmp_path)
+
+        with patch.object(LadybugIngestor, "_execute_query") as mock_exec:
             ingestor.ensure_constraints()
 
-        for label in NodeLabel:
-            prop = NODE_UNIQUE_CONSTRAINTS[label.value]
-            expected = (
-                f"CREATE CONSTRAINT ON (n:{label.value}) ASSERT n.{prop} IS UNIQUE;"
-            )
-            assert expected in executed_queries, (
-                f"Missing constraint for {label.value}. Expected query: {expected}"
-            )
+        mock_exec.assert_not_called()
 
-    def test_ensure_constraints_creates_all_indexes(self) -> None:
-        ingestor = MemgraphIngestor(host="localhost", port=7687)
-        executed_queries: list[str] = []
 
-        def capture_query(query: str, params: object = None) -> list[object]:
-            executed_queries.append(query)
-            return []
-
-        with patch.object(
-            MemgraphIngestor, "_execute_query", side_effect=capture_query
-        ):
-            ingestor.ensure_constraints()
-
-        for label in NodeLabel:
-            prop = NODE_UNIQUE_CONSTRAINTS[label.value]
-            expected_index = f"CREATE INDEX ON :{label.value}({prop});"
-            assert expected_index in executed_queries, (
-                f"Missing index for {label.value}. Expected query: {expected_index}. "
-                "Indexes are required for efficient MERGE operations in Memgraph."
-            )
+# ---------------------------------------------------------------------------
+# Import-time validation of the constants module
+# ---------------------------------------------------------------------------
 
 
 class TestImportTimeValidation:
