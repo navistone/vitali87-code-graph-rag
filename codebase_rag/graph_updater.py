@@ -269,8 +269,11 @@ class GraphUpdater:
         queries: dict[cs.SupportedLanguage, LanguageQueries],
         unignore_paths: frozenset[str] | None = None,
         exclude_paths: frozenset[str] | None = None,
+        progress_cb: object = None,  # accepted but unused; reserved for caller progress tracking
+        skip_embeddings: bool = False,  # set True when caller handles embedding externally
     ):
         self.ingestor = ingestor
+        self.skip_embeddings = skip_embeddings
         self._single_file: Path | None = None
         if repo_path.is_file():
             resolved = repo_path.resolve()
@@ -476,6 +479,14 @@ class GraphUpdater:
             )
 
     def _generate_semantic_embeddings(self) -> None:
+        if self.skip_embeddings:
+            # Caller (e.g. code-indexer-service) handles embedding in a separate
+            # subprocess that writes to the per-repo .vec.db (SQLite + sqlite-vec).
+            # Running the Qdrant-backed path here would cause double-embedding and
+            # write to a store that is no longer consulted at query time.
+            logger.debug("Skipping built-in embedding pass (handled by caller)")
+            return
+
         if not has_semantic_dependencies():
             logger.info(ls.SEMANTIC_NOT_AVAILABLE)
             return
@@ -625,10 +636,15 @@ class GraphUpdater:
 
     @staticmethod
     def _build_embed_text(source_code: str, docstring: str | None) -> str:
+        """Build the text sent to the embedder for a single symbol.
+
+        The subprocess driver in code-indexer-service uses a richer version of
+        this that includes qualified_name, module, and caller-count headers
+        (Plan H).  This fallback version is used by the legacy in-process path
+        only.
+        """
         if docstring:
-            return cs.EMBED_TEMPLATE_WITH_DOCSTRING.format(
-                docstring=docstring, source=source_code
-            )
+            return docstring.strip() + "\n# ---\n" + source_code
         return source_code
 
     def _parse_embedding_result(self, row: ResultRow) -> EmbeddingQueryResult | None:
