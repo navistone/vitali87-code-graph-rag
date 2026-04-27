@@ -9,7 +9,7 @@ from codebase_rag.graph_updater import GraphUpdater
 from codebase_rag.parser_loader import load_parsers
 
 if TYPE_CHECKING:
-    from codebase_rag.services.graph_service import MemgraphIngestor
+    from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 pytestmark = [pytest.mark.integration]
 
@@ -48,7 +48,7 @@ class Handler:
     return project
 
 
-def index_project(ingestor: MemgraphIngestor, project_path: Path) -> None:
+def index_project(ingestor: LadybugIngestor, project_path: Path) -> None:
     parsers, queries = load_parsers()
     updater = GraphUpdater(
         ingestor=ingestor,
@@ -61,14 +61,14 @@ def index_project(ingestor: MemgraphIngestor, project_path: Path) -> None:
 
 class TestListProjects:
     def test_list_projects_empty_database(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         result = memgraph_ingestor.list_projects()
 
         assert result == []
 
     def test_list_projects_after_indexing(
-        self, memgraph_ingestor: MemgraphIngestor, project1_path: Path
+        self, memgraph_ingestor: LadybugIngestor, project1_path: Path
     ) -> None:
         index_project(memgraph_ingestor, project1_path)
 
@@ -78,7 +78,7 @@ class TestListProjects:
 
     def test_list_projects_multiple(
         self,
-        memgraph_ingestor: MemgraphIngestor,
+        memgraph_ingestor: LadybugIngestor,
         project1_path: Path,
         project2_path: Path,
     ) -> None:
@@ -92,7 +92,7 @@ class TestListProjects:
 
 class TestDeleteProject:
     def test_delete_project_removes_all_project_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, project1_path: Path
+        self, memgraph_ingestor: LadybugIngestor, project1_path: Path
     ) -> None:
         index_project(memgraph_ingestor, project1_path)
         assert memgraph_ingestor.list_projects() == ["project1"]
@@ -105,7 +105,7 @@ class TestDeleteProject:
 
     def test_delete_project_preserves_other_projects(
         self,
-        memgraph_ingestor: MemgraphIngestor,
+        memgraph_ingestor: LadybugIngestor,
         project1_path: Path,
         project2_path: Path,
     ) -> None:
@@ -123,7 +123,7 @@ class TestDeleteProject:
         assert project2_nodes[0]["count"] > 0
 
     def test_delete_project_removes_files_and_folders(
-        self, memgraph_ingestor: MemgraphIngestor, project1_path: Path
+        self, memgraph_ingestor: LadybugIngestor, project1_path: Path
     ) -> None:
         index_project(memgraph_ingestor, project1_path)
 
@@ -140,7 +140,7 @@ class TestDeleteProject:
         assert files_after[0]["count"] == 0
 
     def test_delete_nonexistent_project_no_error(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor.delete_project("nonexistent")
 
@@ -150,7 +150,7 @@ class TestDeleteProject:
 class TestMultiProjectIsolation:
     def test_reindex_only_affects_target_project(
         self,
-        memgraph_ingestor: MemgraphIngestor,
+        memgraph_ingestor: LadybugIngestor,
         project1_path: Path,
         project2_path: Path,
     ) -> None:
@@ -176,7 +176,7 @@ class TestMultiProjectIsolation:
 
     def test_projects_have_separate_namespaces(
         self,
-        memgraph_ingestor: MemgraphIngestor,
+        memgraph_ingestor: LadybugIngestor,
         project1_path: Path,
         project2_path: Path,
     ) -> None:
@@ -204,7 +204,7 @@ class TestMultiProjectIsolation:
 class TestCleanDatabase:
     def test_clean_database_removes_all_projects(
         self,
-        memgraph_ingestor: MemgraphIngestor,
+        memgraph_ingestor: LadybugIngestor,
         project1_path: Path,
         project2_path: Path,
     ) -> None:

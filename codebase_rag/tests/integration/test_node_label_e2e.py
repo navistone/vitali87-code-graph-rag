@@ -10,7 +10,7 @@ from codebase_rag.graph_updater import GraphUpdater
 from codebase_rag.parser_loader import load_parsers
 
 if TYPE_CHECKING:
-    from codebase_rag.services.graph_service import MemgraphIngestor
+    from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 pytestmark = [pytest.mark.integration]
 
@@ -309,7 +309,7 @@ return MyClass
 """
 
 
-def index_project(ingestor: MemgraphIngestor, project_path: Path) -> None:
+def index_project(ingestor: LadybugIngestor, project_path: Path) -> None:
     parsers, queries = load_parsers()
     updater = GraphUpdater(
         ingestor=ingestor,
@@ -320,7 +320,7 @@ def index_project(ingestor: MemgraphIngestor, project_path: Path) -> None:
     updater.run()
 
 
-def get_node_labels(ingestor: MemgraphIngestor) -> set[str]:
+def get_node_labels(ingestor: LadybugIngestor) -> set[str]:
     result = ingestor.fetch_all("MATCH (n) RETURN DISTINCT labels(n) AS labels")
     labels: set[str] = set()
     for row in result:
@@ -329,11 +329,11 @@ def get_node_labels(ingestor: MemgraphIngestor) -> set[str]:
     return labels
 
 
-def get_nodes_by_label(ingestor: MemgraphIngestor, label: str) -> list[dict]:
+def get_nodes_by_label(ingestor: LadybugIngestor, label: str) -> list[dict]:
     return ingestor.fetch_all(f"MATCH (n:{label}) RETURN n.name AS name")
 
 
-def get_relationship_types(ingestor: MemgraphIngestor) -> set[str]:
+def get_relationship_types(ingestor: LadybugIngestor) -> set[str]:
     result = ingestor.fetch_all("MATCH ()-[r]->() RETURN DISTINCT type(r) AS type")
     return {row["type"] for row in result}
 
@@ -444,7 +444,7 @@ def lua_project(tmp_path: Path) -> Path:
 
 class TestPythonNodeLabels:
     def test_python_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, python_project: Path
+        self, memgraph_ingestor: LadybugIngestor, python_project: Path
     ) -> None:
         index_project(memgraph_ingestor, python_project)
 
@@ -457,7 +457,7 @@ class TestPythonNodeLabels:
         assert "AnotherClass" in class_names
 
     def test_python_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, python_project: Path
+        self, memgraph_ingestor: LadybugIngestor, python_project: Path
     ) -> None:
         index_project(memgraph_ingestor, python_project)
 
@@ -469,7 +469,7 @@ class TestPythonNodeLabels:
         assert "standalone_function" in func_names
 
     def test_python_creates_method_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, python_project: Path
+        self, memgraph_ingestor: LadybugIngestor, python_project: Path
     ) -> None:
         index_project(memgraph_ingestor, python_project)
 
@@ -482,7 +482,7 @@ class TestPythonNodeLabels:
         assert "method2" in method_names
 
     def test_python_creates_defines_relationships(
-        self, memgraph_ingestor: MemgraphIngestor, python_project: Path
+        self, memgraph_ingestor: LadybugIngestor, python_project: Path
     ) -> None:
         index_project(memgraph_ingestor, python_project)
 
@@ -490,7 +490,7 @@ class TestPythonNodeLabels:
         assert "DEFINES" in rel_types
 
     def test_python_creates_inherits_relationships(
-        self, memgraph_ingestor: MemgraphIngestor, python_project: Path
+        self, memgraph_ingestor: LadybugIngestor, python_project: Path
     ) -> None:
         index_project(memgraph_ingestor, python_project)
 
@@ -500,7 +500,7 @@ class TestPythonNodeLabels:
 
 class TestTypeScriptNodeLabels:
     def test_typescript_creates_interface_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, typescript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, typescript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, typescript_project)
 
@@ -514,7 +514,7 @@ class TestTypeScriptNodeLabels:
         assert "MyInterface" in interface_names
 
     def test_typescript_creates_enum_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, typescript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, typescript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, typescript_project)
 
@@ -528,7 +528,7 @@ class TestTypeScriptNodeLabels:
         assert "Status" in enum_names
 
     def test_typescript_creates_type_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, typescript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, typescript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, typescript_project)
 
@@ -542,7 +542,7 @@ class TestTypeScriptNodeLabels:
         assert "MyType" in type_names
 
     def test_typescript_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, typescript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, typescript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, typescript_project)
 
@@ -554,7 +554,7 @@ class TestTypeScriptNodeLabels:
         assert "MyTsClass" in class_names
 
     def test_typescript_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, typescript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, typescript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, typescript_project)
 
@@ -568,7 +568,7 @@ class TestTypeScriptNodeLabels:
 
 class TestJavaScriptNodeLabels:
     def test_javascript_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, javascript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, javascript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, javascript_project)
 
@@ -580,7 +580,7 @@ class TestJavaScriptNodeLabels:
         assert "MyJsClass" in class_names
 
     def test_javascript_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, javascript_project: Path
+        self, memgraph_ingestor: LadybugIngestor, javascript_project: Path
     ) -> None:
         index_project(memgraph_ingestor, javascript_project)
 
@@ -594,7 +594,7 @@ class TestJavaScriptNodeLabels:
 
 class TestRustNodeLabels:
     def test_rust_creates_class_nodes_for_structs(
-        self, memgraph_ingestor: MemgraphIngestor, rust_project: Path
+        self, memgraph_ingestor: LadybugIngestor, rust_project: Path
     ) -> None:
         index_project(memgraph_ingestor, rust_project)
 
@@ -606,7 +606,7 @@ class TestRustNodeLabels:
         assert "MyStruct" in class_names
 
     def test_rust_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, rust_project: Path
+        self, memgraph_ingestor: LadybugIngestor, rust_project: Path
     ) -> None:
         index_project(memgraph_ingestor, rust_project)
 
@@ -618,7 +618,7 @@ class TestRustNodeLabels:
         assert "standalone_fn" in func_names
 
     def test_rust_creates_enum_nodes_for_enums(
-        self, memgraph_ingestor: MemgraphIngestor, rust_project: Path
+        self, memgraph_ingestor: LadybugIngestor, rust_project: Path
     ) -> None:
         index_project(memgraph_ingestor, rust_project)
 
@@ -630,7 +630,7 @@ class TestRustNodeLabels:
         assert "Status" in enum_names
 
     def test_rust_creates_interface_nodes_for_traits(
-        self, memgraph_ingestor: MemgraphIngestor, rust_project: Path
+        self, memgraph_ingestor: LadybugIngestor, rust_project: Path
     ) -> None:
         index_project(memgraph_ingestor, rust_project)
 
@@ -645,7 +645,7 @@ class TestRustNodeLabels:
 @pytest.mark.skip(reason=SKIP_GO)
 class TestGoNodeLabels:
     def test_go_creates_class_nodes_for_structs(
-        self, memgraph_ingestor: MemgraphIngestor, go_project: Path
+        self, memgraph_ingestor: LadybugIngestor, go_project: Path
     ) -> None:
         index_project(memgraph_ingestor, go_project)
 
@@ -657,7 +657,7 @@ class TestGoNodeLabels:
         assert "MyStruct" in class_names
 
     def test_go_creates_interface_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, go_project: Path
+        self, memgraph_ingestor: LadybugIngestor, go_project: Path
     ) -> None:
         index_project(memgraph_ingestor, go_project)
 
@@ -669,7 +669,7 @@ class TestGoNodeLabels:
         assert "MyInterface" in interface_names
 
     def test_go_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, go_project: Path
+        self, memgraph_ingestor: LadybugIngestor, go_project: Path
     ) -> None:
         index_project(memgraph_ingestor, go_project)
 
@@ -685,7 +685,7 @@ class TestGoNodeLabels:
 @pytest.mark.skip(reason=SKIP_SCALA)
 class TestScalaNodeLabels:
     def test_scala_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, scala_project: Path
+        self, memgraph_ingestor: LadybugIngestor, scala_project: Path
     ) -> None:
         index_project(memgraph_ingestor, scala_project)
 
@@ -697,7 +697,7 @@ class TestScalaNodeLabels:
         assert "MyScalaClass" in class_names
 
     def test_scala_creates_interface_nodes_for_traits(
-        self, memgraph_ingestor: MemgraphIngestor, scala_project: Path
+        self, memgraph_ingestor: LadybugIngestor, scala_project: Path
     ) -> None:
         index_project(memgraph_ingestor, scala_project)
 
@@ -711,7 +711,7 @@ class TestScalaNodeLabels:
 
 class TestJavaNodeLabels:
     def test_java_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, java_project: Path
+        self, memgraph_ingestor: LadybugIngestor, java_project: Path
     ) -> None:
         index_project(memgraph_ingestor, java_project)
 
@@ -723,7 +723,7 @@ class TestJavaNodeLabels:
         assert "Example" in class_names
 
     def test_java_creates_interface_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, java_project: Path
+        self, memgraph_ingestor: LadybugIngestor, java_project: Path
     ) -> None:
         index_project(memgraph_ingestor, java_project)
 
@@ -735,7 +735,7 @@ class TestJavaNodeLabels:
         assert "MyInterface" in interface_names
 
     def test_java_creates_enum_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, java_project: Path
+        self, memgraph_ingestor: LadybugIngestor, java_project: Path
     ) -> None:
         index_project(memgraph_ingestor, java_project)
 
@@ -749,7 +749,7 @@ class TestJavaNodeLabels:
 
 class TestCppNodeLabels:
     def test_cpp_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, cpp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, cpp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, cpp_project)
 
@@ -761,7 +761,7 @@ class TestCppNodeLabels:
         assert "MyCppClass" in class_names
 
     def test_cpp_creates_enum_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, cpp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, cpp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, cpp_project)
 
@@ -773,7 +773,7 @@ class TestCppNodeLabels:
         assert "Status" in enum_names
 
     def test_cpp_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, cpp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, cpp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, cpp_project)
 
@@ -785,7 +785,7 @@ class TestCppNodeLabels:
         assert "standaloneFunction" in func_names
 
     def test_cpp_creates_union_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, cpp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, cpp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, cpp_project)
 
@@ -797,7 +797,7 @@ class TestCppNodeLabels:
         assert "DataUnion" in union_names
 
     def test_cpp_creates_module_interface_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, cpp_module_interface_project: Path
+        self, memgraph_ingestor: LadybugIngestor, cpp_module_interface_project: Path
     ) -> None:
         index_project(memgraph_ingestor, cpp_module_interface_project)
 
@@ -811,7 +811,7 @@ class TestCppNodeLabels:
         assert "mymodule" in module_names
 
     def test_cpp_creates_module_implementation_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, cpp_module_impl_project: Path
+        self, memgraph_ingestor: LadybugIngestor, cpp_module_impl_project: Path
     ) -> None:
         index_project(memgraph_ingestor, cpp_module_impl_project)
 
@@ -828,7 +828,7 @@ class TestCppNodeLabels:
 @pytest.mark.skip(reason=SKIP_CSHARP)
 class TestCSharpNodeLabels:
     def test_csharp_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, csharp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, csharp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, csharp_project)
 
@@ -840,7 +840,7 @@ class TestCSharpNodeLabels:
         assert "MyCSharpClass" in class_names
 
     def test_csharp_creates_interface_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, csharp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, csharp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, csharp_project)
 
@@ -852,7 +852,7 @@ class TestCSharpNodeLabels:
         assert "IMyInterface" in interface_names
 
     def test_csharp_creates_enum_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, csharp_project: Path
+        self, memgraph_ingestor: LadybugIngestor, csharp_project: Path
     ) -> None:
         index_project(memgraph_ingestor, csharp_project)
 
@@ -867,7 +867,7 @@ class TestCSharpNodeLabels:
 @pytest.mark.skip(reason=SKIP_PHP)
 class TestPhpNodeLabels:
     def test_php_creates_class_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, php_project: Path
+        self, memgraph_ingestor: LadybugIngestor, php_project: Path
     ) -> None:
         index_project(memgraph_ingestor, php_project)
 
@@ -879,7 +879,7 @@ class TestPhpNodeLabels:
         assert "MyPhpClass" in class_names
 
     def test_php_creates_interface_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, php_project: Path
+        self, memgraph_ingestor: LadybugIngestor, php_project: Path
     ) -> None:
         index_project(memgraph_ingestor, php_project)
 
@@ -891,7 +891,7 @@ class TestPhpNodeLabels:
         assert "MyInterface" in interface_names
 
     def test_php_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, php_project: Path
+        self, memgraph_ingestor: LadybugIngestor, php_project: Path
     ) -> None:
         index_project(memgraph_ingestor, php_project)
 
@@ -903,7 +903,7 @@ class TestPhpNodeLabels:
         assert "standaloneFunction" in func_names
 
     def test_php_creates_enum_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, php_project: Path
+        self, memgraph_ingestor: LadybugIngestor, php_project: Path
     ) -> None:
         index_project(memgraph_ingestor, php_project)
 
@@ -917,7 +917,7 @@ class TestPhpNodeLabels:
 
 class TestLuaNodeLabels:
     def test_lua_creates_function_nodes(
-        self, memgraph_ingestor: MemgraphIngestor, lua_project: Path
+        self, memgraph_ingestor: LadybugIngestor, lua_project: Path
     ) -> None:
         index_project(memgraph_ingestor, lua_project)
 
@@ -949,7 +949,7 @@ def test_language_has_defines(
     project_fixture: str,
     skip_reason: str | None,
     request: pytest.FixtureRequest,
-    memgraph_ingestor: MemgraphIngestor,
+    memgraph_ingestor: LadybugIngestor,
 ) -> None:
     if skip_reason:
         pytest.skip(skip_reason)

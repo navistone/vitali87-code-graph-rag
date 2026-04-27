@@ -18,7 +18,7 @@ from codebase_rag.cypher_queries import (
 )
 
 if TYPE_CHECKING:
-    from codebase_rag.services.graph_service import MemgraphIngestor
+    from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 
 class TestBuildConstraintQueryUnit:
@@ -105,7 +105,7 @@ class TestBuildNodesByIdsQueryUnit:
 
 @pytest.mark.integration
 class TestCypherDeleteAllIntegration:
-    def test_deletes_all_nodes(self, memgraph_ingestor: MemgraphIngestor) -> None:
+    def test_deletes_all_nodes(self, memgraph_ingestor: LadybugIngestor) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (n:TestNode {name: 'test1'}), (m:TestNode {name: 'test2'})"
         )
@@ -126,7 +126,7 @@ class TestCypherDeleteAllIntegration:
 @pytest.mark.integration
 class TestCypherExportNodesIntegration:
     def test_exports_node_with_labels_and_properties(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (n:Function {qualified_name: 'module.func', name: 'func'})"
@@ -140,7 +140,7 @@ class TestCypherExportNodesIntegration:
         assert results[0]["properties"]["qualified_name"] == "module.func"
         assert results[0]["properties"]["name"] == "func"
 
-    def test_exports_multiple_nodes(self, memgraph_ingestor: MemgraphIngestor) -> None:
+    def test_exports_multiple_nodes(self, memgraph_ingestor: LadybugIngestor) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (a:Class {qualified_name: 'MyClass'}), "
             "(b:Method {qualified_name: 'MyClass.method'})"
@@ -157,7 +157,7 @@ class TestCypherExportNodesIntegration:
 @pytest.mark.integration
 class TestCypherExportRelationshipsIntegration:
     def test_exports_relationship_with_type(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (m:Module {qualified_name: 'mymodule'})-[:DEFINES]->"
@@ -175,7 +175,7 @@ class TestCypherExportRelationshipsIntegration:
 @pytest.mark.integration
 class TestCypherFindByQualifiedNameIntegration:
     def test_finds_function_by_qualified_name(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (m:Module {qualified_name: 'mymodule', path: 'src/mymodule.py'})"
@@ -195,7 +195,7 @@ class TestCypherFindByQualifiedNameIntegration:
         assert results[0]["path"] == "src/mymodule.py"
 
     def test_returns_empty_for_nonexistent_name(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         results = memgraph_ingestor._execute_query(
             CYPHER_FIND_BY_QUALIFIED_NAME, {"qn": "nonexistent.func"}
@@ -207,7 +207,7 @@ class TestCypherFindByQualifiedNameIntegration:
 @pytest.mark.integration
 class TestCypherGetFunctionSourceLocationIntegration:
     def test_gets_source_location_by_node_id(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (m:Module {qualified_name: 'pkg.utils', path: 'pkg/utils.py'})"
@@ -234,7 +234,7 @@ class TestCypherGetFunctionSourceLocationIntegration:
 
 @pytest.mark.integration
 class TestBuildMergeNodeQueryIntegration:
-    def test_merge_creates_new_node(self, memgraph_ingestor: MemgraphIngestor) -> None:
+    def test_merge_creates_new_node(self, memgraph_ingestor: LadybugIngestor) -> None:
         query = build_merge_node_query("Function", "qualified_name")
 
         memgraph_ingestor._execute_query(
@@ -260,7 +260,7 @@ class TestBuildMergeNodeQueryIntegration:
         assert results[0]["start"] == 1
 
     def test_merge_updates_existing_node(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (f:Function {qualified_name: 'mod.func', name: 'old_name'})"
@@ -284,7 +284,7 @@ class TestBuildMergeNodeQueryIntegration:
 @pytest.mark.integration
 class TestBuildMergeRelationshipQueryIntegration:
     def test_creates_relationship_between_nodes(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (m:Module {qualified_name: 'mymod'}), "
@@ -308,7 +308,7 @@ class TestBuildMergeRelationshipQueryIntegration:
         assert verify[0]["count"] == 1
 
     def test_creates_calls_relationship_with_properties(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (f1:Function {qualified_name: 'mod.caller'}), "
@@ -345,7 +345,7 @@ class TestBuildMergeRelationshipQueryIntegration:
 
 @pytest.mark.integration
 class TestBuildNodesByIdsQueryIntegration:
-    def test_fetches_nodes_by_ids(self, memgraph_ingestor: MemgraphIngestor) -> None:
+    def test_fetches_nodes_by_ids(self, memgraph_ingestor: LadybugIngestor) -> None:
         memgraph_ingestor._execute_query(
             "CREATE (f1:Function {qualified_name: 'mod.func1', name: 'func1'}), "
             "(f2:Function {qualified_name: 'mod.func2', name: 'func2'}), "
@@ -368,7 +368,7 @@ class TestBuildNodesByIdsQueryIntegration:
         assert names == {"func1", "func2"}
 
     def test_returns_empty_for_nonexistent_ids(
-        self, memgraph_ingestor: MemgraphIngestor
+        self, memgraph_ingestor: LadybugIngestor
     ) -> None:
         query = build_nodes_by_ids_query([99999, 99998])
         params = {"0": 99999, "1": 99998}
