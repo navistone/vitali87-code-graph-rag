@@ -34,7 +34,7 @@ from .models import AppContext
 from .prompts import OPTIMIZATION_PROMPT, OPTIMIZATION_PROMPT_WITH_REFERENCE
 from .providers.base import get_provider_from_config
 from .services import QueryProtocol
-from .services.graph_service import MemgraphIngestor
+from .services.ladybug_ingestor import LadybugIngestor
 from .services.llm import CypherGenerator, create_rag_orchestrator
 from .tools.code_retrieval import CodeRetriever, create_code_retrieval_tool
 from .tools.codebase_query import create_query_tool
@@ -737,7 +737,7 @@ def update_model_settings(
         _update_single_model_setting(cs.ModelRole.CYPHER, cypher)
 
 
-def _write_graph_json(ingestor: MemgraphIngestor, output_path: Path) -> GraphData:
+def _write_graph_json(ingestor: LadybugIngestor, output_path: Path) -> GraphData:
     graph_data: GraphData = ingestor.export_graph_to_dict()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -747,17 +747,17 @@ def _write_graph_json(ingestor: MemgraphIngestor, output_path: Path) -> GraphDat
     return graph_data
 
 
-def connect_memgraph(batch_size: int) -> MemgraphIngestor:
+def connect_memgraph(batch_size: int) -> LadybugIngestor:
     """Connect to LadybugDB (replaces Memgraph — embedded, no Docker)."""
     import os
     db_path = settings.LADYBUG_DB_PATH
     parent = os.path.dirname(db_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    return MemgraphIngestor(db_path=db_path, batch_size=batch_size)
+    return LadybugIngestor(db_path=db_path, batch_size=batch_size)
 
 
-def export_graph_to_file(ingestor: MemgraphIngestor, output: str) -> bool:
+def export_graph_to_file(ingestor: LadybugIngestor, output: str) -> bool:
     output_path = Path(output)
 
     try:

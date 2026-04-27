@@ -23,7 +23,7 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
     try:
         from ..config import settings
         from ..embedder import embed_query
-        from ..services.graph_service import MemgraphIngestor
+        from ..services.ladybug_ingestor import LadybugIngestor
         from ..vector_store import search_embeddings
 
         query_embedding = embed_query(query)
@@ -37,7 +37,7 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
         # search_results is list[tuple[str, float]] — qualified_name, score
         node_ids = [qn for qn, _ in search_results]
 
-        with MemgraphIngestor(
+        with LadybugIngestor(
             db_path=settings.LADYBUG_DB_PATH,
             batch_size=cs.SEMANTIC_BATCH_SIZE,
         ) as ingestor:
@@ -81,13 +81,13 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
 def get_function_source_code(node_id: str) -> str | None:  # type: ignore[override]
     try:
         from ..config import settings
-        from ..services.graph_service import MemgraphIngestor
+        from ..services.ladybug_ingestor import LadybugIngestor
         from ..utils.source_extraction import (
             extract_source_lines,
             validate_source_location,
         )
 
-        with MemgraphIngestor(
+        with LadybugIngestor(
             db_path=settings.LADYBUG_DB_PATH,
             batch_size=cs.SEMANTIC_BATCH_SIZE,
         ) as ingestor:

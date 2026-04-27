@@ -10,7 +10,7 @@ from codebase_rag import tool_errors as te
 from codebase_rag.graph_updater import GraphUpdater
 from codebase_rag.models import ToolMetadata
 from codebase_rag.parser_loader import load_parsers
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 from codebase_rag.services.llm import CypherGenerator
 from codebase_rag.tools import tool_descriptions as td
 from codebase_rag.tools.code_retrieval import CodeRetriever, create_code_retrieval_tool
@@ -43,7 +43,7 @@ class MCPToolsRegistry:
     def __init__(
         self,
         project_root: str,
-        ingestor: MemgraphIngestor,
+        ingestor: LadybugIngestor,
         cypher_gen: CypherGenerator,
     ) -> None:
         self.project_root = project_root
@@ -478,7 +478,7 @@ class MCPToolsRegistry:
 
 def create_mcp_tools_registry(
     project_root: str,
-    ingestor: MemgraphIngestor,
+    ingestor: LadybugIngestor,
     cypher_gen: CypherGenerator,
 ) -> MCPToolsRegistry:
     return MCPToolsRegistry(
