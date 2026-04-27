@@ -21,7 +21,7 @@ from codebase_rag.cypher_queries import (  # noqa: E402
     build_merge_relationship_query,
     wrap_with_unwind,
 )
-from codebase_rag.services.graph_service import MemgraphIngestor  # noqa: E402
+from codebase_rag.services.graph_service import MemgraphIngestor  # noqa: E402  # shim alias for LadybugIngestor
 
 
 class TestMemgraphIngestorInit:

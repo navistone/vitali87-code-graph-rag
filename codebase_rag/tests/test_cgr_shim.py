@@ -36,9 +36,11 @@ class TestCgrShimExports:
         assert cgr.load_graph is load_graph
 
     def test_memgraph_ingestor_is_canonical_class(self) -> None:
-        from codebase_rag.services.graph_service import MemgraphIngestor
+        from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
-        assert cgr.MemgraphIngestor is MemgraphIngestor
+        # graph_service re-exports LadybugIngestor as MemgraphIngestor for
+        # backward compatibility; cgr exposes it under the legacy name.
+        assert cgr.MemgraphIngestor is LadybugIngestor
 
     def test_cypher_generator_is_canonical_class(self) -> None:
         from codebase_rag.services.llm import CypherGenerator

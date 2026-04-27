@@ -7,12 +7,12 @@ from loguru import logger
 
 from codebase_rag.graph_updater import GraphUpdater
 from codebase_rag.parser_loader import load_parsers
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 
 @pytest.fixture
 def updater(temp_repo: Path) -> GraphUpdater:
-    mock = MagicMock(spec=MemgraphIngestor)
+    mock = MagicMock(spec=LadybugIngestor)
     mock.fetch_all = MagicMock(return_value=[])
     parsers, queries = load_parsers()
     return GraphUpdater(

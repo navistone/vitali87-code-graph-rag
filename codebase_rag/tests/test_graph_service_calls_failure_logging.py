@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from loguru import logger
 
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 
 def _empty_result() -> MagicMock:
@@ -18,9 +18,9 @@ def _empty_result() -> MagicMock:
 
 
 @pytest.fixture
-def graph_service() -> MemgraphIngestor:
-    """Create a LadybugIngestor (MemgraphIngestor alias) with mocked connection."""
-    ingestor = MemgraphIngestor(db_path=":memory:", batch_size=100)
+def graph_service() -> LadybugIngestor:
+    """Create a LadybugIngestor with mocked connection."""
+    ingestor = LadybugIngestor(db_path=":memory:", batch_size=100)
     conn_mock = MagicMock()
     conn_mock.execute.return_value = _empty_result()
     ingestor.conn = conn_mock
@@ -54,7 +54,7 @@ def _make_conn_execute_side_effect(succeed_count: int) -> Any:
 
 
 def test_calls_failure_logging_single_batch(
-    graph_service: MemgraphIngestor, log_messages: list[str]
+    graph_service: LadybugIngestor, log_messages: list[str]
 ) -> None:
     """Test that CALLS failures are logged correctly for a single batch.
 
@@ -90,7 +90,7 @@ def test_calls_failure_logging_single_batch(
 
 
 def test_calls_failure_logging_multiple_batches(
-    graph_service: MemgraphIngestor, log_messages: list[str]
+    graph_service: LadybugIngestor, log_messages: list[str]
 ) -> None:
     """Test that each flush call independently logs CALLS failures.
 
@@ -140,7 +140,7 @@ def test_calls_failure_logging_multiple_batches(
 
 
 def test_calls_success_no_failure_logging(
-    graph_service: MemgraphIngestor, log_messages: list[str]
+    graph_service: LadybugIngestor, log_messages: list[str]
 ) -> None:
     """Test that no failure logs are emitted when all CALLS succeed."""
     graph_service.ensure_relationship_batch(
@@ -163,7 +163,7 @@ def test_calls_success_no_failure_logging(
 
 
 def test_non_calls_relationships_no_failure_logging(
-    graph_service: MemgraphIngestor, log_messages: list[str]
+    graph_service: LadybugIngestor, log_messages: list[str]
 ) -> None:
     """Test that non-CALLS relationship failures do not emit CALLS-specific logs."""
     graph_service.ensure_relationship_batch(
