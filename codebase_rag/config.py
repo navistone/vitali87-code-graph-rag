@@ -140,6 +140,10 @@ class AppConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        # Ignore unknown env vars so this config can coexist with the
+        # code-indexer-service .env (which adds GITHUB_TOKEN and friends).
+        # Without this, any field the HTTP gateway declares breaks our load.
+        extra="ignore",
     )
 
     # LadybugDB (replaces Memgraph — embedded, no Docker)
@@ -239,7 +243,14 @@ class AppConfig(BaseSettings):
         }
     )
 
-    # Embedding / vector search settings (replaces Qdrant — now LadybugDB native)
+    # Embedding / vector search settings (DuckDB store, v5.3)
+    # Set SKIP_EMBEDDINGS=true to skip the embedding pass entirely.  Useful
+    # when callers (e.g. code-indexer-service) drive embedding in a separate
+    # subprocess that writes to the per-repo .duck file directly.  The
+    # structural graph is fully populated either way; only semantic / vector
+    # search is affected.
+    SKIP_EMBEDDINGS: bool = Field(False, validation_alias="SKIP_EMBEDDINGS")
+
     VECTOR_TOP_K: int = 5
     VECTOR_BATCH_SIZE: int = Field(default=50, gt=0)
     VECTOR_UPSERT_RETRIES: int = Field(default=3, gt=0)
@@ -351,11 +362,15 @@ def load_cgrignore_patterns(repo_path: Path) -> CgrignorePatterns:
     try:
         with ignore_file.open(encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                # Strip whitespace AND trailing slashes so entries like
+                # `.forge/` match both the directory and its descendants.
+                # Without this, `.forge/`.startswith(f"{p}/") becomes
+                # `.forge//` which matches nothing.
+                line = line.strip().rstrip("/")
                 if not line or line.startswith("#"):
                     continue
                 if line.startswith("!"):
-                    unignore.add(line[1:].strip())
+                    unignore.add(line[1:].strip().rstrip("/"))
                 else:
                     exclude.add(line)
         if exclude or unignore:

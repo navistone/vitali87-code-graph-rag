@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sys
+import time as _time
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, ItemsView, KeysView
 from pathlib import Path
@@ -11,6 +12,12 @@ from tree_sitter import Node, Parser
 from . import constants as cs
 from . import logs as ls
 from .config import settings
+from .cypher_queries import (
+    CYPHER_DELETE_MODULE_DEFINES,
+    CYPHER_DELETE_MODULE_METHODS,
+    CYPHER_DELETE_MODULE_NODE,
+    CYPHER_DELETE_ORPHAN_PACKAGES,
+)
 from .language_spec import LANGUAGE_FQN_SPECS, get_language_spec
 from .parsers.factory import ProcessorFactory
 from .services import IngestorProtocol, QueryProtocol
@@ -269,8 +276,11 @@ class GraphUpdater:
         queries: dict[cs.SupportedLanguage, LanguageQueries],
         unignore_paths: frozenset[str] | None = None,
         exclude_paths: frozenset[str] | None = None,
+        progress_cb: Callable[[dict], None] | None = None,
+        skip_embeddings: bool = False,  # set True when caller handles embedding externally
     ):
         self.ingestor = ingestor
+        self.skip_embeddings = skip_embeddings
         self._single_file: Path | None = None
         if repo_path.is_file():
             resolved = repo_path.resolve()
@@ -287,6 +297,7 @@ class GraphUpdater:
         self.ast_cache = BoundedASTCache()
         self.unignore_paths = unignore_paths
         self.exclude_paths = exclude_paths
+        self._progress_cb = progress_cb
 
         self.factory = ProcessorFactory(
             ingestor=self.ingestor,
@@ -300,6 +311,16 @@ class GraphUpdater:
             exclude_paths=self.exclude_paths,
         )
 
+    def _emit_progress(self, event: dict) -> None:
+        """Fire the progress callback safely — errors never abort indexing."""
+        if self._progress_cb is not None:
+            try:
+                self._progress_cb(event)
+            except Exception:
+                # Re-raise only CancelledError-style signals; swallow everything else
+                # so a buggy callback cannot break the index run.
+                raise
+
     def _is_dependency_file(self, file_name: str, filepath: Path) -> bool:
         return (
             file_name.lower() in cs.DEPENDENCY_FILES
@@ -307,6 +328,7 @@ class GraphUpdater:
         )
 
     def run(self, force: bool = False) -> None:
+        self._emit_progress({"phase": "discovering"})
         self.ingestor.ensure_node_batch(
             cs.NODE_PROJECT, {cs.KEY_NAME: self.project_name}
         )
@@ -325,9 +347,16 @@ class GraphUpdater:
         self.factory.definition_processor.process_all_method_overrides()
 
         logger.info(ls.ANALYSIS_COMPLETE)
+        self._emit_progress({"phase": "writing"})
         self.ingestor.flush_all()
 
-        self._generate_semantic_embeddings()
+        if settings.SKIP_EMBEDDINGS:
+            logger.info("Embedding pass skipped (SKIP_EMBEDDINGS=true)")
+            self._emit_progress({"phase": "finalizing", "progress_pct": 98.0})
+        else:
+            self._generate_semantic_embeddings()
+
+        self._emit_progress({"phase": "done", "progress_pct": 100.0})
 
     def remove_file_from_state(self, file_path: Path) -> None:
         logger.debug(ls.REMOVING_STATE, path=file_path)
@@ -361,6 +390,30 @@ class GraphUpdater:
                 self.simple_name_lookup[simple_name] = new_qn_set
                 logger.debug(ls.CLEANED_SIMPLE_NAME, name=simple_name)
 
+        # ------------------------------------------------------------------
+        # Graph DB cleanup — remove Module and its descendants, then prune
+        # any Package nodes that have become orphans.
+        # Skipped gracefully when the ingestor does not support writes (e.g.
+        # in unit tests using a stub ingestor).
+        # ------------------------------------------------------------------
+        if hasattr(self.ingestor, "execute_write"):
+            params = {"qn": module_qn_prefix}
+            try:
+                self.ingestor.execute_write(CYPHER_DELETE_MODULE_METHODS, params)
+                self.ingestor.execute_write(CYPHER_DELETE_MODULE_DEFINES, params)
+                self.ingestor.execute_write(CYPHER_DELETE_MODULE_NODE, params)
+                self.ingestor.execute_write(CYPHER_DELETE_ORPHAN_PACKAGES, {})
+                logger.debug(
+                    "Removed graph nodes for module %s and pruned orphan packages",
+                    module_qn_prefix,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "graph_updater: could not remove graph nodes for %s: %s",
+                    module_qn_prefix,
+                    exc,
+                )
+
     def _collect_eligible_files(self) -> list[Path]:
         if self._single_file is not None:
             if not should_skip_path(
@@ -374,17 +427,25 @@ class GraphUpdater:
 
         eligible: list[Path] = []
         for filepath in self.repo_path.rglob("*"):
-            if (
-                filepath.is_file()
-                and filepath.name != cs.HASH_CACHE_FILENAME
-                and not should_skip_path(
-                    filepath,
-                    self.repo_path,
-                    exclude_paths=self.exclude_paths,
-                    unignore_paths=self.unignore_paths,
+            try:
+                if (
+                    filepath.is_file()
+                    and filepath.name != cs.HASH_CACHE_FILENAME
+                    and not should_skip_path(
+                        filepath,
+                        self.repo_path,
+                        exclude_paths=self.exclude_paths,
+                        unignore_paths=self.unignore_paths,
+                    )
+                ):
+                    eligible.append(filepath)
+            except (UnicodeDecodeError, ValueError, OSError) as exc:
+                # Filenames with non-UTF-8 bytes produce surrogate-escaped
+                # Path objects on Linux; str() on them raises UnicodeDecodeError.
+                # OSError can occur when the file disappears mid-scan.
+                logger.warning(
+                    "Skipping file with unreadable path during scan: %s", exc
                 )
-            ):
-                eligible.append(filepath)
         return eligible
 
     def _process_files(self, force: bool = False) -> None:
@@ -394,6 +455,9 @@ class GraphUpdater:
             logger.info(ls.INCREMENTAL_FORCE)
 
         eligible_files = self._collect_eligible_files()
+        # Emit discovery completion with total file count.
+        self._emit_progress({"phase": "discovering", "files_total": len(eligible_files)})
+
         new_hashes: FileHashCache = {}
         skipped_count = 0
         changed_count = 0
@@ -401,10 +465,15 @@ class GraphUpdater:
         current_file_keys: set[str] = set()
 
         processed_since_flush = 0
+        _total_files = len(eligible_files)
+        _files_scanned = 0  # all files seen (including skipped)
+        _last_cb_time = _time.monotonic()
+        _files_since_cb = 0
 
         for filepath in eligible_files:
             file_key = str(filepath.relative_to(self.repo_path))
             current_file_keys.add(file_key)
+            _files_scanned += 1
 
             current_hash = _hash_file(filepath)
             new_hashes[file_key] = current_hash
@@ -416,6 +485,17 @@ class GraphUpdater:
             ):
                 logger.debug(ls.FILE_HASH_UNCHANGED, path=file_key)
                 skipped_count += 1
+                _files_since_cb += 1
+                # Still emit progress so the bar moves even on skipped files.
+                _now = _time.monotonic()
+                if _files_since_cb >= 10 or (_now - _last_cb_time) >= 0.5:
+                    self._emit_progress({
+                        "phase": "parsing",
+                        "files_done": _files_scanned,
+                        "current_file": file_key,
+                    })
+                    _last_cb_time = _now
+                    _files_since_cb = 0
                 continue
 
             if file_key in old_hashes:
@@ -426,6 +506,17 @@ class GraphUpdater:
 
             changed_count += 1
             self._process_single_file(filepath)
+            _files_since_cb += 1
+
+            _now = _time.monotonic()
+            if _files_since_cb >= 10 or (_now - _last_cb_time) >= 0.5:
+                self._emit_progress({
+                    "phase": "parsing",
+                    "files_done": _files_scanned,
+                    "current_file": file_key,
+                })
+                _last_cb_time = _now
+                _files_since_cb = 0
 
             processed_since_flush += 1
             if processed_since_flush >= settings.FILE_FLUSH_INTERVAL:
@@ -476,6 +567,15 @@ class GraphUpdater:
             )
 
     def _generate_semantic_embeddings(self) -> None:
+        if self.skip_embeddings:
+            # Caller (e.g. code-indexer-service) handles embedding in a separate
+            # subprocess that writes to the per-repo ``.duck`` file (DuckDB —
+            # v5.3 §6.5 + §8.4).  Running the in-process embedding path here
+            # would cause double-embedding and write to a store that is no
+            # longer consulted at query time.
+            logger.debug("Skipping built-in embedding pass (handled by caller)")
+            return
+
         if not has_semantic_dependencies():
             logger.info(ls.SEMANTIC_NOT_AVAILABLE)
             return
@@ -487,7 +587,7 @@ class GraphUpdater:
         try:
             from .embedder import embed_code, get_embedding_cache
             from .vector_store import (
-                close_qdrant_client,
+                flush_embeddings,
                 store_embedding_batch,
                 verify_stored_ids,
             )
@@ -503,13 +603,16 @@ class GraphUpdater:
                 return
 
             logger.info(ls.GENERATING_EMBEDDINGS, count=len(results))
+            self._emit_progress({"phase": "embedding", "files_total": len(results)})
 
             embedded_count = 0
             expected_ids: set[str] = set()
             batch_buffer: list[tuple[str, list[float], str]] = []
             batch_size = settings.VECTOR_BATCH_SIZE
+            _total_to_embed = max(len(results), 1)
+            _emit_interval = 50  # emit progress every N embeddings attempted
 
-            for row in results:
+            for _embed_idx, row in enumerate(results):
                 parsed = self._parse_embedding_result(row)
                 if parsed is None:
                     continue
@@ -519,6 +622,7 @@ class GraphUpdater:
                 start_line = parsed.get(cs.KEY_START_LINE)
                 end_line = parsed.get(cs.KEY_END_LINE)
                 file_path = parsed.get(cs.KEY_PATH)
+                docstring = parsed.get(cs.KEY_DOCSTRING)
 
                 if start_line is None or end_line is None or file_path is None:
                     logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
@@ -527,8 +631,54 @@ class GraphUpdater:
                 if source_code := self._extract_source_code(
                     qualified_name, file_path, start_line, end_line
                 ):
+                    # Skip trivial functions — inline arrows, 1-line setters,
+                    # stub/mock helpers, empty-state placeholders. Their
+                    # embeddings are near-uniform and crowd real application
+                    # code out of top-k results for any natural-language
+                    # query. Thresholds:
+                    #   <150 non-whitespace chars OR <5 non-blank lines →
+                    #     too trivial (covers `emptyTask`-style React
+                    #     placeholders, one-line setters, stubs)
+                    #   anonymous_LINE_COL pattern → tree-sitter parser
+                    #     fallback for unnamed callbacks (always trivial)
+                    #   duplicated trailing segments (e.g.
+                    #     `useHook.useHook.connect.connect`) → inner-scope
+                    #     closure wrappers the parser emits; always trivial
+                    _stripped = "".join(source_code.split())
+                    _nonblank_lines = [
+                        ln for ln in source_code.splitlines() if ln.strip()
+                    ]
+                    import re as _re_anon
+                    _is_anon = bool(
+                        _re_anon.search(
+                            r"\banonymous_\d+_\d+\b", qualified_name
+                        )
+                    )
+                    _parts = qualified_name.split(".")
+                    _dup_tail = (
+                        len(_parts) >= 2 and _parts[-1] == _parts[-2]
+                    )
+                    if (
+                        _is_anon
+                        or _dup_tail
+                        or len(_stripped) < 150
+                        or len(_nonblank_lines) < 5
+                    ):
+                        logger.debug(
+                            "Skipping trivial function embedding",
+                            name=qualified_name,
+                            chars=len(_stripped),
+                            lines=len(_nonblank_lines),
+                        )
+                        continue
+
                     try:
-                        embedding = embed_code(source_code)
+                        # Prepend docstring to source so semantic search benefits
+                        # from natural-language descriptions; the helper centralises
+                        # the format so the external embedding subprocess in
+                        # code-indexer-service can stay in sync.
+                        embed_text = self._build_embed_text(source_code, docstring)
+                        embedding = embed_code(embed_text)
                         batch_buffer.append((node_id, embedding, qualified_name))
                         expected_ids.add(node_id)
 
@@ -546,6 +696,15 @@ class GraphUpdater:
                                 total=len(results),
                             )
 
+                        # Emit per-batch progress every _emit_interval embeddings.
+                        if (_embed_idx + 1) % _emit_interval == 0:
+                            _pct = 70.0 + ((_embed_idx + 1) / _total_to_embed) * 28.0
+                            self._emit_progress({
+                                "phase": "embedding",
+                                "files_done": _embed_idx + 1,
+                                "progress_pct": min(97.9, _pct),
+                            })
+
                     except Exception as e:
                         logger.warning(
                             ls.EMBEDDING_FAILED, name=qualified_name, error=e
@@ -556,12 +715,18 @@ class GraphUpdater:
             if batch_buffer:
                 embedded_count += store_embedding_batch(batch_buffer)
 
+            # Persist all in-memory embeddings to disk (numpy files).
+            db_path = str(self.ingestor._db_path) if hasattr(self.ingestor, "_db_path") else None
+            flush_embeddings(db_path=db_path)
+
             logger.info(ls.EMBEDDINGS_COMPLETE, count=embedded_count)
 
-            self._reconcile_embeddings(expected_ids, verify_stored_ids)
+            self._reconcile_embeddings(
+                expected_ids,
+                lambda ids: verify_stored_ids(ids, db_path=db_path),
+            )
 
             get_embedding_cache().save()
-            close_qdrant_client()
 
         except Exception as e:
             logger.warning(ls.EMBEDDING_GENERATION_FAILED, error=e)
@@ -621,6 +786,19 @@ class GraphUpdater:
             file_path_obj, start_line, end_line, qualified_name, ast_extractor
         )
 
+    @staticmethod
+    def _build_embed_text(source_code: str, docstring: str | None) -> str:
+        """Build the text sent to the embedder for a single symbol.
+
+        The subprocess driver in code-indexer-service uses a richer version of
+        this that includes qualified_name, module, and caller-count headers
+        (Plan H).  This fallback version is used by the legacy in-process path
+        only.
+        """
+        if docstring:
+            return docstring.strip() + "\n# ---\n" + source_code
+        return source_code
+
     def _parse_embedding_result(self, row: ResultRow) -> EmbeddingQueryResult | None:
         node_id = row.get(cs.KEY_NODE_ID)
         qualified_name = row.get(cs.KEY_QUALIFIED_NAME)
@@ -632,11 +810,14 @@ class GraphUpdater:
         start_line = row.get(cs.KEY_START_LINE)
         end_line = row.get(cs.KEY_END_LINE)
         file_path = row.get(cs.KEY_PATH)
+        docstring = row.get(cs.KEY_DOCSTRING)
 
+        docstring = row.get(cs.KEY_DOCSTRING)
         return EmbeddingQueryResult(
             node_id=node_id,
             qualified_name=qualified_name,
             start_line=start_line if isinstance(start_line, int) else None,
             end_line=end_line if isinstance(end_line, int) else None,
             path=file_path if isinstance(file_path, str) else None,
+            docstring=docstring if isinstance(docstring, str) else None,
         )

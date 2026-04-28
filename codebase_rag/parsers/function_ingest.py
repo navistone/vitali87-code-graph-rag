@@ -300,8 +300,20 @@ class FunctionIngestMixin:
             return safe_decode_text(name_node)
 
         if func_node.type == cs.TS_ARROW_FUNCTION:
+            # Boundary node types that indicate the arrow is nested inside
+            # something (callback argument, object literal, array literal,
+            # etc.) — in these cases the arrow should NOT inherit a name from
+            # an enclosing variable declarator. e.g. `const t = setTimeout(
+            # () => {...})` — the arrow is a callback; naming it "t" is wrong.
+            BOUNDARIES = (
+                cs.TS_CALL_EXPRESSION,
+                cs.TS_ARGUMENTS,
+                cs.TS_OBJECT,
+            )
             current = func_node.parent
             while current:
+                if current.type in BOUNDARIES:
+                    return None
                 if current.type == cs.TS_VARIABLE_DECLARATOR:
                     for child in current.children:
                         if child.type == cs.TS_IDENTIFIER and child.text:

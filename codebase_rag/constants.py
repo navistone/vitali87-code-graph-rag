@@ -149,7 +149,9 @@ V1_PATH = "/v1"
 # (H) HTTP status codes
 HTTP_OK = 200
 
-UNIXCODER_MODEL = "microsoft/unixcoder-base"
+CODERANK_EMBED_MODEL = "nomic-ai/CodeRankEmbed"
+CODERANK_CODE_PREFIX = "Represent this code snippet: "
+CODERANK_QUERY_PREFIX = "search_query: "
 EMBEDDING_DEFAULT_BATCH_SIZE = 32
 EMBEDDING_CACHE_FILENAME = ".embedding_cache.json"
 
@@ -395,6 +397,11 @@ KEY_DECORATORS = "decorators"
 KEY_DOCSTRING = "docstring"
 KEY_IS_EXPORTED = "is_exported"
 
+# (H) Embedding text template — docstring is prepended to source as a
+# comment so the semantic encoder sees both the natural-language
+# description and the implementation in a single input.
+EMBED_TEMPLATE_WITH_DOCSTRING = "# {docstring}\n{source}"
+
 # (H) Method signature formatting
 EMPTY_PARENS = "()"
 DOCSTRING_STRIP_CHARS = "'\" \n"
@@ -430,7 +437,7 @@ CYPHER_QUERY_EMBEDDINGS = (
     # LadybugDB has no integer id(n) — use qualified_name as the node_id.
     + """RETURN n.qualified_name AS node_id, n.qualified_name AS qualified_name,
        n.start_line AS start_line, n.end_line AS end_line,
-       m.path AS path
+       m.path AS path, n.docstring AS docstring
 """
 )
 
@@ -748,6 +755,7 @@ class TreeSitterModule(StrEnum):
     JAVA = "tree_sitter_java"
     CPP = "tree_sitter_cpp"
     LUA = "tree_sitter_lua"
+    CSHARP = "tree_sitter_c_sharp"
 
 
 # (H) Query dict keys
@@ -812,7 +820,7 @@ IGNORE_PATTERNS = frozenset(
         ".nyc_output",
         ".pnpm-store",
         ".pytest_cache",
-        ".qdrant_code_embeddings",
+        ".qdrant_code_embeddings",  # legacy Qdrant data dir — safe to skip if present
         ".ruff_cache",
         ".svn",
         ".tmp",
@@ -951,21 +959,13 @@ TEXT_UNKNOWN = "unknown"
 
 MODULE_TORCH = "torch"
 MODULE_TRANSFORMERS = "transformers"
-MODULE_QDRANT_CLIENT = "qdrant_client"
 
-SEMANTIC_DEPENDENCIES = (MODULE_QDRANT_CLIENT, MODULE_TORCH, MODULE_TRANSFORMERS)
+# Semantic dependencies: torch + transformers (CodeRankEmbed model stack —
+# `nomic-ai/CodeRankEmbed`; UniXcoder was the v1 baseline, now superseded).
+# Qdrant was removed in the LadybugDB migration; qdrant-client is no longer installed.
+SEMANTIC_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 
-
-class UniXcoderMode(StrEnum):
-    ENCODER_ONLY = "<encoder-only>"
-    DECODER_ONLY = "<decoder-only>"
-    ENCODER_DECODER = "<encoder-decoder>"
-
-
-UNIXCODER_MASK_TOKEN = "<mask0>"
-UNIXCODER_BUFFER_BIAS = "bias"
-UNIXCODER_MAX_CONTEXT = 1024
 
 REL_TYPE_CALLS = "CALLS"
 

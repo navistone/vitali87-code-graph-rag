@@ -182,5 +182,82 @@ class TestParseEmbeddingResult:
             "start_line": None,
             "end_line": None,
             "path": None,
+            "docstring": None,
         }
         assert result == expected
+
+    def test_result_includes_docstring_when_present(
+        self, graph_updater: GraphUpdater
+    ) -> None:
+        row: ResultRow = {
+            cs.KEY_NODE_ID: 1,
+            cs.KEY_QUALIFIED_NAME: "test.func",
+            cs.KEY_DOCSTRING: "Return x plus one.",
+        }
+
+        result = graph_updater._parse_embedding_result(row)
+
+        assert result is not None
+        assert result["docstring"] == "Return x plus one."
+
+    def test_result_docstring_none_when_missing(
+        self, graph_updater: GraphUpdater
+    ) -> None:
+        row: ResultRow = {
+            cs.KEY_NODE_ID: 1,
+            cs.KEY_QUALIFIED_NAME: "test.func",
+        }
+
+        result = graph_updater._parse_embedding_result(row)
+
+        assert result is not None
+        assert result["docstring"] is None
+
+    def test_result_docstring_none_when_not_a_string(
+        self, graph_updater: GraphUpdater
+    ) -> None:
+        row: ResultRow = {
+            cs.KEY_NODE_ID: 1,
+            cs.KEY_QUALIFIED_NAME: "test.func",
+            cs.KEY_DOCSTRING: 42,
+        }
+
+        result = graph_updater._parse_embedding_result(row)
+
+        assert result is not None
+        assert result["docstring"] is None
+
+
+class TestBuildEmbedText:
+    def test_returns_source_unchanged_when_no_docstring(self) -> None:
+        source = "def add(a, b):\n    return a + b"
+
+        result = GraphUpdater._build_embed_text(source, None)
+
+        assert result == source
+
+    def test_returns_source_unchanged_when_empty_docstring(self) -> None:
+        source = "def add(a, b):\n    return a + b"
+
+        result = GraphUpdater._build_embed_text(source, "")
+
+        assert result == source
+
+    def test_prepends_docstring_as_comment(self) -> None:
+        source = "def add(a, b):\n    return a + b"
+        docstring = "Return the sum of a and b."
+
+        result = GraphUpdater._build_embed_text(source, docstring)
+
+        assert result == f"# {docstring}\n{source}"
+        assert result.startswith("# Return the sum of a and b.\n")
+        assert result.endswith(source)
+
+    def test_preserves_multiline_docstring(self) -> None:
+        source = "def foo(): pass"
+        docstring = "Line one.\nLine two."
+
+        result = GraphUpdater._build_embed_text(source, docstring)
+
+        assert docstring in result
+        assert result.endswith(source)

@@ -22,22 +22,28 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
 
     try:
         from ..config import settings
-        from ..embedder import embed_code
-        from ..services.graph_service import MemgraphIngestor
+        from ..embedder import embed_query
+        from ..services.ladybug_ingestor import LadybugIngestor
         from ..vector_store import search_embeddings
 
-        query_embedding = embed_code(query)
+        query_embedding = embed_query(query)
 
+        # ``search_embeddings`` is now a thin compatibility shim that resolves
+        # the per-repo ``.duck`` file from ``settings.LADYBUG_DB_PATH`` and
+        # delegates to ``storage.vector_store.search_similar`` — the historic
+        # numpy backend has been retired so the call goes straight to DuckDB.
+        # Use ``top_k=`` rather than ``k=`` to match the legacy public contract
+        # the test suite asserts on (and that downstream consumers may still rely
+        # on).  The shim accepts both kwargs for backward compatibility.
         search_results = search_embeddings(query_embedding, top_k=top_k)
 
         if not search_results:
             logger.info(ls.SEMANTIC_NO_MATCH.format(query=query))
             return []
 
-        # search_results is list[tuple[str, float]] — qualified_name, score
         node_ids = [qn for qn, _ in search_results]
 
-        with MemgraphIngestor(
+        with LadybugIngestor(
             db_path=settings.LADYBUG_DB_PATH,
             batch_size=cs.SEMANTIC_BATCH_SIZE,
         ) as ingestor:
@@ -81,13 +87,13 @@ def semantic_code_search(query: str, top_k: int = 5) -> list[SemanticSearchResul
 def get_function_source_code(node_id: str) -> str | None:  # type: ignore[override]
     try:
         from ..config import settings
-        from ..services.graph_service import MemgraphIngestor
+        from ..services.ladybug_ingestor import LadybugIngestor
         from ..utils.source_extraction import (
             extract_source_lines,
             validate_source_location,
         )
 
-        with MemgraphIngestor(
+        with LadybugIngestor(
             db_path=settings.LADYBUG_DB_PATH,
             batch_size=cs.SEMANTIC_BATCH_SIZE,
         ) as ingestor:

@@ -13,7 +13,7 @@ from codebase_rag import logs as lg
 from codebase_rag import tool_errors as te
 from codebase_rag.config import settings
 from codebase_rag.mcp.tools import create_mcp_tools_registry
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 from codebase_rag.services.llm import CypherGenerator
 from codebase_rag.types_defs import MCPToolArguments
 
@@ -55,7 +55,7 @@ def get_project_root() -> Path:
     return project_root
 
 
-def create_server() -> tuple[Server, MemgraphIngestor]:
+def create_server() -> tuple[Server, LadybugIngestor]:
     setup_logging()
 
     try:
@@ -67,7 +67,7 @@ def create_server() -> tuple[Server, MemgraphIngestor]:
 
     logger.info(lg.MCP_SERVER_INIT_SERVICES)
 
-    ingestor = MemgraphIngestor(
+    ingestor = LadybugIngestor(
         db_path=settings.LADYBUG_DB_PATH,
         batch_size=settings.LADYBUG_BATCH_SIZE,
     )

@@ -29,16 +29,20 @@ keywords = [
     "graph-database",
     "semantic-search",
     "codebase",
-    "memgraph",
     "developer-tools",
     "monorepo",
 ]
 dependencies = [
     "loguru>=0.7.3",
     "mcp>=1.21.1",
+    "numpy>=1.26.0",
     "pydantic-ai>=1.27.0",
+    # Pin <2.0 because griffe 2.0 was repackaged as a meta-package
+    # (depends on griffecli + griffelib, no `griffe/` module of its own),
+    # which breaks `import griffe` inside pydantic-ai-slim's _griffe.py.
+    # Re-evaluate when pydantic-ai ships a release that targets griffe 2.x.
+    "griffe>=0.49.0,<2.0",
     "pydantic-settings>=2.0.0",
-    "pymgclient>=1.4.0",
     "python-dotenv>=1.1.0",
     "toml>=0.10.2",
     "tree-sitter-python>=0.23.6",
@@ -51,7 +55,12 @@ dependencies = [
     "click>=8.0.0",
     "protobuf>=5.27.0",
     "defusedxml>=0.7.1",
-    "huggingface-hub[hf-xet]>=0.36.0",
+    # Upper-bound at <1.0 because the current transformers release
+    # (4.57.x) imports `huggingface_hub.utils.HfHubHTTPError` from a
+    # legacy submodule that hub 1.x removed; bumping past 1.0 breaks
+    # `from transformers import …` at import time.  Re-evaluate when
+    # transformers ships a release that declares hub 1.x compatibility.
+    "huggingface-hub[hf-xet]>=0.36.0,<1.0",
     "real-ladybug>=0.15.3",
 ]
 
@@ -88,9 +97,21 @@ treesitter-full = [
 ]
 
 semantic = [
-    "qdrant-client>=1.9.0",
+    # v5.3: DuckDB replaces both Qdrant (removed CI-5) and the LadybugDB native
+    # VECTOR extension (rejected per v5.3 §17.2 — extension-loading vs
+    # schema-validation circular dependency on restart).
+    "duckdb>=1.1.0",
     "torch>=2.6.0",
     "transformers>=4.0.0",
+    "einops>=0.7.0",
+    "docstring-parser>=0.16",
+    "networkx>=3.2",
+]
+
+arrow = [
+    # Optional bulk-insert acceleration via DuckDB's Arrow zero-copy path.
+    # Only required for codebase_rag.storage.vector_store_arrow.bulk_insert_arrow.
+    "pyarrow>=15.0",
 ]
 
 [tool.ruff]

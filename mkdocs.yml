@@ -78,8 +78,6 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started:
-    - Installation: getting-started/installation.md
-    - Configuration: getting-started/configuration.md
     - Quick Start: getting-started/quickstart.md
   - User Guide:
     - CLI Reference: guide/cli-reference.md
@@ -101,7 +99,6 @@ nav:
     - Adding Languages: advanced/adding-languages.md
     - Ignore Patterns: advanced/ignore-patterns.md
     - Building Binaries: advanced/building-binaries.md
-    - Troubleshooting: advanced/troubleshooting.md
   - Contributing: contributing.md
 
 extra_css:

@@ -6,7 +6,7 @@ import pytest
 from codebase_rag import constants as cs
 from codebase_rag.graph_updater import GraphUpdater
 from codebase_rag.parser_loader import load_parsers
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 from codebase_rag.types_defs import ResultRow
 
 MOCK_EMBEDDING = [0.1] * 768
@@ -25,7 +25,7 @@ _PATCH_RECONCILE = patch(
 
 @pytest.fixture
 def query_ingestor() -> MagicMock:
-    mock = MagicMock(spec=MemgraphIngestor)
+    mock = MagicMock(spec=LadybugIngestor)
     mock.fetch_all = MagicMock(return_value=[])
     mock.execute_write = MagicMock()
     return mock

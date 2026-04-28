@@ -1,10 +1,10 @@
 ---
-description: "Semantic code search with UniXcoder embeddings in Code-Graph-RAG."
+description: "Semantic code search with CodeRankEmbed embeddings in Code-Graph-RAG."
 ---
 
 # Semantic Search
 
-Code-Graph-RAG supports intent-based code search using UniXcoder embeddings. Find functions by describing what they do rather than by exact names.
+Code-Graph-RAG supports intent-based code search using `nomic-ai/CodeRankEmbed` embeddings (768-dim, L2-normalised, asymmetric code/query prefixes). Find functions by describing what they do rather than by exact names. An optional listwise rerank stage via `nomic-ai/CodeRankLLM` further sharpens precision.
 
 ## Installation
 
@@ -37,4 +37,4 @@ The system returns potential matches with similarity scores.
 
 ## How It Works
 
-UniXcoder is a unified cross-modal pre-trained model that supports both code understanding and generation. Code-Graph-RAG uses it to create embeddings that capture the semantic meaning of code, enabling searches based on what code does rather than what it's named.
+`nomic-ai/CodeRankEmbed` is a code-domain bi-encoder (a fine-tuned descendant of nomic-embed-text) that produces 768-dim L2-normalised embeddings. It uses asymmetric prefixes — `"Represent this code snippet: "` for code at index time and `"search_query: "` for queries — to optimise retrieval quality. Code-Graph-RAG uses it to capture the semantic meaning of code, enabling searches based on what code does rather than what it's named. UniXcoder was the v1 baseline before being superseded by CodeRankEmbed.

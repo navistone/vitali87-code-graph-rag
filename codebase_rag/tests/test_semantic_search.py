@@ -8,7 +8,7 @@ from codebase_rag.utils.dependencies import has_semantic_dependencies
 
 
 @pytest.fixture
-def mock_embed_code() -> MagicMock:
+def mock_embed_query() -> MagicMock:
     mock = MagicMock()
     mock.return_value = [0.1] * 768
     return mock
@@ -63,17 +63,17 @@ def test_semantic_code_search_returns_empty_without_dependencies() -> None:
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
 def test_semantic_code_search_returns_formatted_results(
-    mock_embed_code: MagicMock,
+    mock_embed_query: MagicMock,
     mock_search_embeddings: MagicMock,
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search_embeddings),
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
     ):
@@ -89,41 +89,41 @@ def test_semantic_code_search_returns_formatted_results(
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
-def test_semantic_code_search_calls_embed_code_with_query(
-    mock_embed_code: MagicMock,
+def test_semantic_code_search_calls_embed_query_with_query(
+    mock_embed_query: MagicMock,
     mock_search_embeddings: MagicMock,
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search_embeddings),
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
     ):
         semantic_code_search("database operations")
 
-    mock_embed_code.assert_called_once_with("database operations")
+    mock_embed_query.assert_called_once_with("database operations")
 
 
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
 def test_semantic_code_search_passes_top_k_to_search(
-    mock_embed_code: MagicMock,
+    mock_embed_query: MagicMock,
     mock_search_embeddings: MagicMock,
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search_embeddings),
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
     ):
@@ -136,14 +136,14 @@ def test_semantic_code_search_passes_top_k_to_search(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
 def test_semantic_code_search_returns_empty_when_no_matches(
-    mock_embed_code: MagicMock,
+    mock_embed_query: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
 
     mock_search_empty = MagicMock(return_value=[])
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search_empty),
     ):
         results = semantic_code_search("nonexistent functionality")
@@ -154,12 +154,12 @@ def test_semantic_code_search_returns_empty_when_no_matches(
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
-def test_semantic_code_search_handles_exception(mock_embed_code: MagicMock) -> None:
+def test_semantic_code_search_handles_exception(mock_embed_query: MagicMock) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
 
-    mock_embed_code.side_effect = Exception("Embedding failed")
+    mock_embed_query.side_effect = Exception("Embedding failed")
 
-    with patch("codebase_rag.embedder.embed_code", mock_embed_code):
+    with patch("codebase_rag.embedder.embed_query", mock_embed_query):
         results = semantic_code_search("some query")
 
     assert results == []
@@ -169,7 +169,7 @@ def test_semantic_code_search_handles_exception(mock_embed_code: MagicMock) -> N
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
 def test_semantic_code_search_preserves_score_order(
-    mock_embed_code: MagicMock,
+    mock_embed_query: MagicMock,
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
@@ -177,10 +177,10 @@ def test_semantic_code_search_preserves_score_order(
     mock_search = MagicMock(return_value=[(3, 0.99), (1, 0.80), (2, 0.70)])
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search),
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
     ):
@@ -212,7 +212,7 @@ def test_get_function_source_code_returns_source(mock_ingestor: MagicMock) -> No
 
     with (
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
         patch(
@@ -239,7 +239,7 @@ def test_get_function_source_code_returns_none_when_not_found(
     mock_ingestor._execute_query.return_value = []
 
     with patch(
-        "codebase_rag.services.graph_service.MemgraphIngestor",
+        "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
         return_value=mock_ingestor,
     ):
         result = get_function_source_code(999)
@@ -268,7 +268,7 @@ def test_get_function_source_code_returns_none_on_invalid_location(
 
     with (
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
         patch(
@@ -290,7 +290,7 @@ def test_get_function_source_code_handles_exception(mock_ingestor: MagicMock) ->
     mock_ingestor._execute_query.side_effect = Exception("Database error")
 
     with patch(
-        "codebase_rag.services.graph_service.MemgraphIngestor",
+        "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
         return_value=mock_ingestor,
     ):
         result = get_function_source_code(123)
@@ -333,7 +333,7 @@ def test_create_get_function_source_tool_returns_tool() -> None:
 )
 @pytest.mark.asyncio
 async def test_semantic_search_tool_formats_results(
-    mock_embed_code: MagicMock,
+    mock_embed_query: MagicMock,
     mock_search_embeddings: MagicMock,
     mock_ingestor: MagicMock,
 ) -> None:
@@ -342,10 +342,10 @@ async def test_semantic_search_tool_formats_results(
     tool = create_semantic_search_tool()
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search_embeddings),
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
     ):
@@ -362,7 +362,7 @@ async def test_semantic_search_tool_formats_results(
 )
 @pytest.mark.asyncio
 async def test_semantic_search_tool_handles_no_results(
-    mock_embed_code: MagicMock,
+    mock_embed_query: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import create_semantic_search_tool
 
@@ -370,7 +370,7 @@ async def test_semantic_search_tool_handles_no_results(
     tool = create_semantic_search_tool()
 
     with (
-        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.embedder.embed_query", mock_embed_query),
         patch("codebase_rag.vector_store.search_embeddings", mock_search_empty),
     ):
         result = await tool.function("nonexistent")
@@ -403,7 +403,7 @@ async def test_get_function_source_tool_returns_source(
 
     with (
         patch(
-            "codebase_rag.services.graph_service.MemgraphIngestor",
+            "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
             return_value=mock_ingestor,
         ),
         patch(
@@ -434,7 +434,7 @@ async def test_get_function_source_tool_handles_not_found(
     tool = create_get_function_source_tool()
 
     with patch(
-        "codebase_rag.services.graph_service.MemgraphIngestor",
+        "codebase_rag.services.ladybug_ingestor.LadybugIngestor",
         return_value=mock_ingestor,
     ):
         result = await tool.function(999)

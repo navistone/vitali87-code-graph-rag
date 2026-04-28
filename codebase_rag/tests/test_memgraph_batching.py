@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from codebase_rag.services.graph_service import MemgraphIngestor
+from codebase_rag.services.ladybug_ingestor import LadybugIngestor
 
 
 def _empty_result() -> MagicMock:
@@ -20,9 +20,9 @@ def _empty_result() -> MagicMock:
 
 def _create_ingestor_with_mocked_connection(
     batch_size: int = 2,
-) -> tuple[MemgraphIngestor, MagicMock]:
-    """Create a LadybugIngestor (MemgraphIngestor alias) with conn.execute mocked."""
-    ingestor = MemgraphIngestor(db_path=":memory:", batch_size=batch_size)
+) -> tuple[LadybugIngestor, MagicMock]:
+    """Create a LadybugIngestor with conn.execute mocked."""
+    ingestor = LadybugIngestor(db_path=":memory:", batch_size=batch_size)
     conn_mock = MagicMock()
     conn_mock.execute.return_value = _empty_result()
     ingestor.conn = conn_mock
@@ -70,7 +70,7 @@ def test_relationship_batch_flushes_after_threshold_and_respects_node_flush() ->
     ingestor, conn_mock = _create_ingestor_with_mocked_connection()
 
     with patch.object(
-        MemgraphIngestor, "flush_nodes", wraps=ingestor.flush_nodes
+        LadybugIngestor, "flush_nodes", wraps=ingestor.flush_nodes
     ) as flush_nodes_spy:
         ingestor.ensure_relationship_batch(
             ("Module", "qualified_name", "proj.module1"),

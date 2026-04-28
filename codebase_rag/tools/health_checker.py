@@ -4,7 +4,6 @@ import os
 import subprocess
 
 import real_ladybug as lb
-from loguru import logger
 
 from .. import constants as cs
 from ..config import settings

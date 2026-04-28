@@ -46,13 +46,10 @@ claude mcp add --transport stdio code-graph-rag \
 ## Prerequisites
 
 ```bash
-# 1. Install code-graph-rag
-git clone https://github.com/vitali87/code-graph-rag.git
+# Install code-graph-rag (graph + vector stores are embedded; no Docker)
+git clone https://github.com/iflow-mcp/vitali87-code-graph-rag.git code-graph-rag
 cd code-graph-rag
 uv sync
-
-# 2. Start Memgraph
-docker run -p 7687:7687 -p 7444:7444 memgraph/memgraph-platform
 ```
 
 ## Usage
