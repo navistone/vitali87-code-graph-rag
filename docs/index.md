@@ -27,19 +27,21 @@ Code-Graph-RAG is an accurate Retrieval-Augmented Generation (RAG) system that a
 - **Interactive Code Optimization** with language-specific best practices
 - **Reference-Guided Optimization** using your own coding standards
 - **Dependency Analysis** from `pyproject.toml`
-- **Semantic Code Search** using UniXcoder embeddings to find functions by intent
+- **Semantic Code Search** using `nomic-ai/CodeRankEmbed` embeddings to find functions by intent (optional `nomic-ai/CodeRankLLM` listwise rerank)
 - **MCP Server Integration** for seamless use with Claude Code
 - **Real-Time Graph Updates** via file watcher for active development
 
 ## Quick Start
 
 ```bash
-pip install code-graph-rag
-docker compose up -d
+uv sync
 cgr start --repo-path ./my-project --update-graph --clean
 ```
 
-See the [Installation](getting-started/installation.md) guide for full setup instructions.
+The graph store (LadybugDB / kuzu) and the vector store (DuckDB) are
+both embedded — no Docker, no separate database services.  See the
+[Quick Start](getting-started/quickstart.md) guide for full setup
+instructions.
 
 ## Enterprise Services
 

@@ -108,6 +108,12 @@ semantic = [
     "networkx>=3.2",
 ]
 
+arrow = [
+    # Optional bulk-insert acceleration via DuckDB's Arrow zero-copy path.
+    # Only required for codebase_rag.storage.vector_store_arrow.bulk_insert_arrow.
+    "pyarrow>=15.0",
+]
+
 [tool.ruff]
 line-length = 88
 target-version = "py312"

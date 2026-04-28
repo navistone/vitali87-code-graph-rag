@@ -14,7 +14,7 @@ With all Tree-sitter grammars (Python, JS, TS, Rust, Go, Java, Scala, C++, Lua):
 pip install 'code-graph-rag[treesitter-full]'
 ```
 
-With semantic code search (UniXcoder embeddings):
+With semantic code search (`nomic-ai/CodeRankEmbed` embeddings):
 
 ```bash
 pip install 'code-graph-rag[semantic]'
@@ -23,18 +23,18 @@ pip install 'code-graph-rag[semantic]'
 ### Prerequisites
 
 - Python 3.12+
-- Docker (for Memgraph)
-- `cmake` (for building pymgclient)
 - `ripgrep` (`rg`) (for shell command text searching)
+
+The graph (LadybugDB / kuzu) and vector (DuckDB) stores are both
+embedded.  No Docker, no separate database service.
 
 ## CLI Quick Start
 
 The package installs a `cgr` command.
 
-**Start Memgraph, parse a repo, and query it:**
+**Parse a repo and query it:**
 
 ```bash
-docker compose up -d                       # start Memgraph
 cgr start --repo-path ./my-project \
           --update-graph --clean           # parse & launch interactive chat
 ```
@@ -138,8 +138,7 @@ Configure via `.env` or environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMGRAPH_HOST` | `localhost` | Memgraph hostname |
-| `MEMGRAPH_PORT` | `7687` | Memgraph port |
+| `LADYBUG_DB_PATH` | `./.cgr/repos/{slug}.db` | Per-repo embedded graph database file |
 | `ORCHESTRATOR_PROVIDER` | | Provider: `google`, `openai`, `ollama` |
 | `ORCHESTRATOR_MODEL` | | Model ID (e.g. `gpt-4o`, `gemini-2.5-pro`) |
 | `ORCHESTRATOR_API_KEY` | | API key for the provider (not needed for `ollama`) |

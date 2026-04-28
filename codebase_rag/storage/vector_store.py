@@ -31,6 +31,8 @@ Public API (preserved from the previous backend so callers don't change):
     read_centrality(conn, qualified_names) -> dict[str, float]
     clear_centrality(conn)
     row_count(conn) -> int
+    verify_stored_ids(conn, qualified_names) -> set[str]
+    delete_embeddings(conn, qualified_names) -> int
 
 DuckDB connections are not safe to share across threads; callers should
 open a per-request connection (or a per-thread cursor) and close it
@@ -166,6 +168,25 @@ def insert_embedding(conn: Any, row: EmbeddingRow) -> None:
 def bulk_insert(conn: Any, rows: list[EmbeddingRow]) -> int:
     """Insert (upsert) many rows inside a single transaction.
 
+    Implementation note (perf — measured 2026-04-27):
+        DuckDB's per-row binding of ``FLOAT[768]`` parameters from a Python
+        list is the bottleneck of ``executemany`` — at 1000 rows it costs
+        ~44 ms/row (≈44 s total) regardless of how many rows go through one
+        ``executemany`` call.
+
+        When ``pyarrow`` is importable, this function transparently delegates
+        to :func:`vector_store_arrow.bulk_insert_arrow`, which stages the
+        same data through a registered Arrow table and uses DuckDB's
+        columnar bulk-load path.  Measured speedup at 100/500/1000 rows is
+        ~324×/382×/390× respectively (linear scaling — see
+        ``scripts/BENCH_RESULTS_2026-04-27.md``).
+
+        Without ``pyarrow``, falls back to the executemany path (one batched
+        DELETE + one ``executemany`` INSERT) which is correct but slow.
+        Install the Arrow extra to opt in::
+
+            pip install code-graph-rag[arrow]
+
     Args:
         conn: Open connection from ``open_or_create``.
         rows: Embedding rows to insert.  Empty list is a no-op.
@@ -176,32 +197,48 @@ def bulk_insert(conn: Any, rows: list[EmbeddingRow]) -> int:
     if not rows:
         return 0
 
+    # Fast path: delegate to the Arrow-staged implementation when pyarrow
+    # is installed.  ~380× faster on FLOAT[768] payloads (see docstring).
+    try:
+        import pyarrow  # noqa: F401  (sentinel — avoids the cost when absent)
+
+        from codebase_rag.storage.vector_store_arrow import bulk_insert_arrow
+
+        return bulk_insert_arrow(conn, rows)
+    except ImportError:
+        pass  # pyarrow not installed — use the executemany fallback below.
+
     now = int(time.time())
+    qnames = [row.qualified_name for row in rows]
+    insert_params = [
+        (
+            row.qualified_name,
+            _l2_normalise(row.embedding),
+            row.symbol_type,
+            row.file_path,
+            row.start_line,
+            row.end_line,
+            row.indexed_at or now,
+        )
+        for row in rows
+    ]
+    placeholders = ",".join("?" for _ in qnames)
+
     conn.execute("BEGIN")
     try:
-        for row in rows:
-            normalised = _l2_normalise(row.embedding)
-            conn.execute(
-                "DELETE FROM embeddings WHERE qualified_name = ?",
-                (row.qualified_name,),
-            )
-            conn.execute(
-                """
-                INSERT INTO embeddings
-                    (qualified_name, embedding, symbol_type, file_path,
-                     start_line, end_line, indexed_at)
-                VALUES (?, ?::FLOAT[768], ?, ?, ?, ?, ?)
-                """,
-                (
-                    row.qualified_name,
-                    normalised,
-                    row.symbol_type,
-                    row.file_path,
-                    row.start_line,
-                    row.end_line,
-                    row.indexed_at or now,
-                ),
-            )
+        conn.execute(
+            f"DELETE FROM embeddings WHERE qualified_name IN ({placeholders})",
+            qnames,
+        )
+        conn.executemany(
+            """
+            INSERT INTO embeddings
+                (qualified_name, embedding, symbol_type, file_path,
+                 start_line, end_line, indexed_at)
+            VALUES (?, ?::FLOAT[768], ?, ?, ?, ?, ?)
+            """,
+            insert_params,
+        )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -259,21 +296,26 @@ def write_metadata(conn: Any, **fields: Any) -> None:
         conn: Open connection from ``open_or_create``.
         **fields: Arbitrary key=value pairs.  All values are coerced to str.
     """
+    if not fields:
+        return
     now = int(time.time())
+    keys = list(fields.keys())
+    placeholders = ",".join("?" for _ in keys)
+    insert_params = [(k, str(fields[k]), now) for k in keys]
+
     conn.execute("BEGIN")
     try:
-        for key, value in fields.items():
-            conn.execute(
-                "DELETE FROM repo_metadata WHERE key = ?",
-                (key,),
-            )
-            conn.execute(
-                """
-                INSERT INTO repo_metadata (key, value, updated_at)
-                VALUES (?, ?, ?)
-                """,
-                (key, str(value), now),
-            )
+        conn.execute(
+            f"DELETE FROM repo_metadata WHERE key IN ({placeholders})",
+            keys,
+        )
+        conn.executemany(
+            """
+            INSERT INTO repo_metadata (key, value, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            insert_params,
+        )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -326,20 +368,23 @@ def write_centrality(conn: Any, scores: dict[str, float]) -> int:
     if not scores:
         return 0
     now = int(time.time())
+    qnames = list(scores.keys())
+    placeholders = ",".join("?" for _ in qnames)
+    insert_params = [(q, float(scores[q]), now) for q in qnames]
+
     conn.execute("BEGIN")
     try:
-        for qname, score in scores.items():
-            conn.execute(
-                "DELETE FROM centrality WHERE qualified_name = ?",
-                (qname,),
-            )
-            conn.execute(
-                """
-                INSERT INTO centrality (qualified_name, pagerank, updated_at)
-                VALUES (?, ?, ?)
-                """,
-                (qname, float(score), now),
-            )
+        conn.execute(
+            f"DELETE FROM centrality WHERE qualified_name IN ({placeholders})",
+            qnames,
+        )
+        conn.executemany(
+            """
+            INSERT INTO centrality (qualified_name, pagerank, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            insert_params,
+        )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -404,3 +449,82 @@ def row_count(conn: Any) -> int:
         return int(result[0]) if result else 0
     except Exception:
         return 0
+
+
+def verify_stored_ids(
+    conn: Any, qualified_names: set[str]
+) -> set[str]:
+    """Return the subset of ``qualified_names`` that have a stored embedding.
+
+    Lane-C migration helper — replaces the legacy ``vector_store.verify_stored_ids``
+    which keyed by Memgraph ``node_id``.  The DuckDB schema is keyed by
+    ``qualified_name``, so callers porting from the numpy backend should
+    translate their node-id set to qualified-names via the ingestor before
+    calling this.
+
+    Used by ``graph_updater._reconcile_embeddings`` to detect rows that
+    were generated but failed to persist (so it can warn the operator
+    rather than silently lose data).
+
+    Args:
+        conn: Open connection from ``open_or_create``.
+        qualified_names: The full set of names the caller expected to write.
+            Empty set returns an empty set.
+
+    Returns:
+        set[str]: Intersection of ``qualified_names`` and rows present in the
+        ``embeddings`` table.  Missing names = ``qualified_names - returned``.
+    """
+    if not qualified_names:
+        return set()
+    placeholders = ",".join("?" for _ in qualified_names)
+    try:
+        rows = conn.execute(
+            f"SELECT qualified_name FROM embeddings "
+            f"WHERE qualified_name IN ({placeholders})",
+            tuple(qualified_names),
+        ).fetchall()
+    except Exception:
+        # Table missing or transient DB error — treat as nothing stored so
+        # the reconciliation pass logs every expected id as missing.
+        return set()
+    return {r[0] for r in rows}
+
+
+def delete_embeddings(conn: Any, qualified_names: list[str] | set[str]) -> int:
+    """Delete embedding rows by qualified name.
+
+    Lane-C migration helper — replaces ``vector_store.delete_project_embeddings``
+    which keyed by Memgraph ``node_id`` and required the project name as a
+    namespacing prefix.  In the DuckDB store every ``.duck`` file is already
+    per-repo, so the project-name dimension is implicit in the file path.
+
+    Args:
+        conn: Open connection from ``open_or_create``.
+        qualified_names: Names to delete.  Empty input is a no-op.
+
+    Returns:
+        int: Number of rows deleted (0 when input was empty or none matched).
+    """
+    if not qualified_names:
+        return 0
+    names = list(qualified_names)
+    placeholders = ",".join("?" for _ in names)
+    conn.execute("BEGIN")
+    try:
+        # DuckDB doesn't return rowcount on DELETE, so count first.
+        existing = conn.execute(
+            f"SELECT count(*) FROM embeddings "
+            f"WHERE qualified_name IN ({placeholders})",
+            tuple(names),
+        ).fetchone()
+        deleted = int(existing[0]) if existing else 0
+        conn.execute(
+            f"DELETE FROM embeddings WHERE qualified_name IN ({placeholders})",
+            tuple(names),
+        )
+        conn.execute("COMMIT")
+        return deleted
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise

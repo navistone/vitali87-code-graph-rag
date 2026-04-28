@@ -569,9 +569,10 @@ class GraphUpdater:
     def _generate_semantic_embeddings(self) -> None:
         if self.skip_embeddings:
             # Caller (e.g. code-indexer-service) handles embedding in a separate
-            # subprocess that writes to the per-repo .vec.db (SQLite + sqlite-vec).
-            # Running the Qdrant-backed path here would cause double-embedding and
-            # write to a store that is no longer consulted at query time.
+            # subprocess that writes to the per-repo ``.duck`` file (DuckDB —
+            # v5.3 §6.5 + §8.4).  Running the in-process embedding path here
+            # would cause double-embedding and write to a store that is no
+            # longer consulted at query time.
             logger.debug("Skipping built-in embedding pass (handled by caller)")
             return
 

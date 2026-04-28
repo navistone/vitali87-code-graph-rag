@@ -64,9 +64,7 @@ An accurate Retrieval-Augmented Generation (RAG) system that analyzes multi-lang
 > **Run tests (fork):**
 > ```bash
 > # Unit tests (no Docker, no Ollama):
-> uv run pytest codebase_rag/tests/ \
->   --ignore=codebase_rag/tests/test_unixcoder_unit.py \
->   -q
+> uv run pytest codebase_rag/tests/ -q
 >
 > # LadybugDB-specific tests (unit + e2e index/query):
 > uv run pytest codebase_rag/tests/test_ladybug_vector_store.py \
@@ -96,7 +94,8 @@ An accurate Retrieval-Augmented Generation (RAG) system that analyzes multi-lang
 ## Latest News 🔥
 
 - **[NEW]** **MCP Server Integration**: Code-Graph-RAG now works as an MCP server with Claude Code! Query and edit your codebase using natural language directly from Claude Code. [Setup Guide](docs/claude-code-setup.md)
-- [2025/10/21] **Semantic Code Search**: Added intent-based code search using UniXcoder embeddings. Find functions by describing what they do (e.g., "error handling functions", "authentication code") rather than by exact names.
+- [2026/04/27] **Two-stage retrieval (v5.3)**: Migrated from UniXcoder to `nomic-ai/CodeRankEmbed` (bi-encoder) with optional `nomic-ai/CodeRankLLM` listwise rerank. LM Studio backend supported alongside in-process transformers.
+- [2025/10/21] **Semantic Code Search**: Added intent-based code search using embedding-based retrieval. Find functions by describing what they do (e.g., "error handling functions", "authentication code") rather than by exact names.
 
 ## 🚀 Features
 
@@ -142,29 +141,30 @@ The system consists of two main components:
 ## 📋 Prerequisites
 
 - Python 3.12+
-- Docker & Docker Compose (for Memgraph)
-- **cmake** (required for building pymgclient dependency)
 - **ripgrep** (`rg`) (required for shell command text searching)
 - **For cloud models**: Google Gemini API key
 - **For local models**: Ollama installed and running
 - `uv` package manager
 
-### Installing cmake and ripgrep
+> The graph (LadybugDB / kuzu) and vector (DuckDB) stores are both
+> embedded — no Docker, no Memgraph, no Qdrant.  `cmake` is no longer
+> required (the old `pymgclient` Memgraph adapter has been removed).
+
+### Installing ripgrep
 
 On macOS:
 ```bash
-brew install cmake ripgrep
+brew install ripgrep
 ```
 
 On Linux (Ubuntu/Debian):
 ```bash
 sudo apt-get update
-sudo apt-get install cmake ripgrep
+sudo apt-get install ripgrep
 ```
 
 On Linux (CentOS/RHEL):
 ```bash
-sudo yum install cmake
 sudo dnf install ripgrep
 # Note: ripgrep may need to be installed from EPEL or via cargo
 ```
@@ -172,7 +172,7 @@ sudo dnf install ripgrep
 ## 🛠️ Installation
 
 ```bash
-git clone https://github.com/vitali87/code-graph-rag.git
+git clone https://github.com/iflow-mcp/vitali87-code-graph-rag.git code-graph-rag
 
 cd code-graph-rag
 ```
@@ -276,10 +276,9 @@ ollama pull llama3.2
 
 > **Note**: Local models provide privacy and no API costs, but may have lower accuracy compared to cloud models like Gemini.
 
-4. **Start Memgraph database**:
-```bash
-docker-compose up -d
-```
+> The graph (LadybugDB / kuzu) and vector (DuckDB) stores are embedded;
+> there is no separate database service to start. Skip straight to
+> running `cgr start --repo-path …`.
 
 ## 🛠️ Makefile Commands
 
@@ -566,7 +565,7 @@ The agent will incorporate the guidance from your reference documents when sugge
 - `--orchestrator`: Specify provider:model for main operations (e.g., `google:gemini-2.0-flash-thinking-exp-01-21`, `ollama:llama3.2`)
 - `--cypher`: Specify provider:model for graph queries (e.g., `google:gemini-2.5-flash-lite-preview-06-17`, `ollama:codellama`)
 - `--repo-path`: Path to repository (defaults to current directory)
-- `--batch-size`: Override Memgraph flush batch size (defaults to `MEMGRAPH_BATCH_SIZE` in settings)
+- `--batch-size`: Override LadybugDB flush batch size (defaults to `LADYBUG_BATCH_SIZE` in settings)
 - `--reference-document`: Path to reference documentation (optimization only)
 
 ## 🔌 MCP Server (Claude Code Integration)
@@ -705,11 +704,8 @@ Configuration is managed through environment variables in `.env` file:
 - `CYPHER_SERVICE_ACCOUNT_FILE`: Path to service account file (for Vertex AI)
 
 ### System Settings
-- `MEMGRAPH_HOST`: Memgraph hostname (default: `localhost`)
-- `MEMGRAPH_PORT`: Memgraph port (default: `7687`)
-- `MEMGRAPH_HTTP_PORT`: Memgraph HTTP port (default: `7444`)
-- `LAB_PORT`: Memgraph Lab port (default: `3000`)
-- `MEMGRAPH_BATCH_SIZE`: Batch size for Memgraph operations (default: `1000`)
+- `LADYBUG_DB_PATH`: Per-repo embedded graph database file (default: `./.cgr/repos/{slug}.db`)
+- `LADYBUG_BATCH_SIZE`: Batch size for LadybugDB ingest operations (default: `1000`)
 - `TARGET_REPO_PATH`: Default repository path (default: `.`)
 - `LOCAL_MODEL_ENDPOINT`: Fallback endpoint for Ollama (default: `http://localhost:11434/v1`)
 
@@ -737,7 +733,8 @@ my_build_output
 - **mcp**: Model Context Protocol SDK
 - **pydantic-ai**: Agent Framework / shim to use Pydantic with LLMs
 - **pydantic-settings**: Settings management using Pydantic
-- **pymgclient**: Memgraph database adapter for Python language
+- **real-ladybug** (kuzu): Embedded graph database (replaces Memgraph)
+- **duckdb**: Embedded vector store with `array_cosine_distance`
 - **python-dotenv**: Read key-value pairs from a .env file and set them as environment variables
 - **toml**: Python Library for Tom's Obvious, Minimal Language
 - **tree-sitter-python**: Python grammar for tree-sitter
@@ -905,13 +902,15 @@ The resulting binary will be located in the `dist` directory.
 
 ## 🐛 Debugging
 
-1. **Check Memgraph connection**:
-   - Ensure Docker containers are running: `docker-compose ps`
-   - Verify Memgraph is accessible on port 7687
+1. **Check the LadybugDB graph file**:
+   - Default path: `./.cgr/repos/{slug}.db`
+   - Override via `LADYBUG_DB_PATH` env var
+   - Delete the file and re-run `cgr start --update-graph --clean` to reindex from scratch
 
-2. **View database in Memgraph Lab**:
-   - Open http://localhost:3000
-   - Connect to memgraph:7687
+2. **Check the DuckDB vector file**:
+   - Default path: `./.cgr/repos/{slug}.duck`
+   - Open ad-hoc with `duckdb path/to/file.duck` to inspect the
+     `embeddings`, `repo_metadata`, and `centrality` tables
 
 3. **For local models**:
    - Verify Ollama is running: `ollama list`

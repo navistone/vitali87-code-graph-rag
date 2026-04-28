@@ -960,7 +960,8 @@ TEXT_UNKNOWN = "unknown"
 MODULE_TORCH = "torch"
 MODULE_TRANSFORMERS = "transformers"
 
-# Semantic dependencies: torch + transformers (UniXcoder model stack).
+# Semantic dependencies: torch + transformers (CodeRankEmbed model stack —
+# `nomic-ai/CodeRankEmbed`; UniXcoder was the v1 baseline, now superseded).
 # Qdrant was removed in the LadybugDB migration; qdrant-client is no longer installed.
 SEMANTIC_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
 ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)

@@ -29,17 +29,26 @@ An interactive CLI for querying the stored knowledge graph.
 ## Data Flow
 
 ```
-Source Code → Tree-sitter Parser → AST Analysis → Memgraph Knowledge Graph
+Source Code → Tree-sitter Parser → AST Analysis → LadybugDB (kuzu) graph
                                                           ↓
 User Query → AI Model (Cypher Gen) → Cypher Query → Graph Results → Response
+
+                              CodeRankEmbed (768-dim) → DuckDB FLOAT[768]
+                                                          ↓
+Natural-language query → embed → array_cosine_distance → ranked results
 ```
+
+Both stores are embedded files on disk (`.cgr/repos/{slug}.db` for the
+graph and `.cgr/repos/{slug}.duck` for the vectors) — no separate
+database service, no Docker.
 
 ## Key Dependencies
 
 | Dependency | Purpose |
 |-----------|---------|
 | `tree-sitter` | Language-agnostic AST parsing |
-| `pymgclient` | Memgraph database adapter |
+| `real-ladybug` (kuzu) | Embedded graph database (replaces Memgraph) |
+| `duckdb` | Embedded vector store with `array_cosine_distance` |
 | `pydantic-ai` | Agent framework for LLM integration |
 | `pydantic-settings` | Settings management |
 | `mcp` | Model Context Protocol SDK |
@@ -48,4 +57,4 @@ User Query → AI Model (Cypher Gen) → Cypher Query → Graph Results → Resp
 | `prompt-toolkit` | Interactive command line |
 | `diff-match-patch` | Code patching |
 | `watchdog` | Filesystem events monitoring |
-| `huggingface-hub` | UniXcoder model download |
+| `huggingface-hub` | CodeRankEmbed / CodeRankLLM model download |

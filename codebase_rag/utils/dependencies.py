@@ -28,10 +28,14 @@ def has_transformers() -> bool:
 
 
 def has_semantic_dependencies() -> bool:
-    """Return True when UniXcoder embedding dependencies are available.
+    """Return True when CodeRankEmbed embedding dependencies are available.
 
-    Requires ``torch`` and ``transformers`` only.  Qdrant was removed in the
-    LadybugDB migration and is no longer a dependency.
+    Requires ``torch`` and ``transformers`` (loaded via the in-process
+    embedder fallback path).  When the LM Studio adapter is in use the
+    service makes HTTP calls to ``$LM_STUDIO_URL`` and these deps are
+    unnecessary; this check still returns True if torch/transformers are
+    present so the fallback path remains available.  Qdrant was removed
+    in the LadybugDB migration and is no longer a dependency.
     """
     return has_torch() and has_transformers()
 

@@ -39,7 +39,7 @@ for fn in functions[:5]:
 | `from cgr import load_graph` | Load and query exported graph data |
 | `from cgr import MemgraphIngestor` | Query Memgraph with Cypher directly |
 | `from cgr import CypherGenerator` | Generate Cypher from natural language |
-| `from cgr import embed_code` | Semantic code search with UniXcoder |
+| `from cgr import embed_code` | Semantic code search with CodeRankEmbed |
 | `from cgr import settings` | Configure providers programmatically |
 
 ## Configuration

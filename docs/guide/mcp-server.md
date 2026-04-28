@@ -46,12 +46,13 @@ claude mcp add --transport stdio code-graph-rag \
 ## Prerequisites
 
 ```bash
-git clone https://github.com/vitali87/code-graph-rag.git
+git clone https://github.com/iflow-mcp/vitali87-code-graph-rag.git code-graph-rag
 cd code-graph-rag
 uv sync
-
-docker run -p 7687:7687 -p 7444:7444 memgraph/memgraph-platform
 ```
+
+The graph store (LadybugDB / kuzu) and vector store (DuckDB) are
+embedded — no Docker, no separate service to start.
 
 ## Available Tools
 

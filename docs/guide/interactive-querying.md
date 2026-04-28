@@ -55,7 +55,8 @@ Search for functions by describing what they do, rather than by exact names:
 - "authentication code"
 - "database connection setup"
 
-Semantic search uses UniXcoder embeddings and requires the `semantic` extra:
+Semantic search uses `nomic-ai/CodeRankEmbed` embeddings (768-dim, L2-normalised)
+and requires the `semantic` extra:
 
 ```bash
 pip install 'code-graph-rag[semantic]'
