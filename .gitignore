@@ -16,7 +16,7 @@ wheels/
 .claude/
 .qdrant_code_embeddings/
 CLAUDE.md
-AGENTS.md
+# AGENTS.md is the tracked team-facing agent-skills index (CLAUDE.md is local-only).
 PROJECT.md
 .coverage
 .envrc
