@@ -1,3 +1,4 @@
+# ruff: noqa: T201  -- bench script: intentional print to stdout/stderr
 """Bench harness for DuckDB bulk_insert paths (Phase 4 decision input).
 
 Measures median wall-clock for the existing executemany-based ``bulk_insert``
@@ -24,6 +25,7 @@ import statistics
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -64,20 +66,21 @@ def _make_rows(n: int, seed: int = 0) -> list[EmbeddingRow]:
     ]
 
 
-def _time_once(fn, *args) -> float:
+def _time_once(fn: Callable[..., object], *args: object) -> float:
     t0 = time.perf_counter()
     fn(*args)
     return (time.perf_counter() - t0) * 1000.0
 
 
-def _fresh_conn(tmp: Path, label: str, trial: int):
+def _fresh_conn(tmp: Path, label: str, trial: int) -> object:
+    """Open a fresh DuckDB connection at a per-trial path, removing any prior file."""
     db = tmp / f"{label}_{trial}.duck"
     if db.exists():
         db.unlink()
     return open_or_create(str(db))
 
 
-def _bench_path(label: str, fn, sizes: tuple[int, ...]) -> dict[int, float]:
+def _bench_path(label: str, fn: Callable[..., object], sizes: tuple[int, ...]) -> dict[int, float]:
     """Run ``fn(conn, rows)`` against fresh DBs at each size; return median ms."""
     out: dict[int, float] = {}
     with tempfile.TemporaryDirectory() as tmpdir:

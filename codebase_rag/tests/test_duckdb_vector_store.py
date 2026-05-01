@@ -8,7 +8,6 @@ Tests follow the Testing Rules:
 from __future__ import annotations
 
 import math
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -41,7 +40,7 @@ def _unit_vec(index: int, dim: int = _DIM) -> list[float]:
 
 
 def _normalise(v: list[float]) -> list[float]:
-    """L2-normalise a vector in-place and return it."""
+    """Return an L2-normalised copy of ``v``; zero vectors returned unchanged."""
     mag = math.sqrt(sum(x * x for x in v))
     if mag == 0.0:
         return v

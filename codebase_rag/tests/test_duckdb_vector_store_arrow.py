@@ -28,12 +28,14 @@ _DIM = 768
 
 
 def _unit_vec(index: int, dim: int = _DIM) -> list[float]:
+    """Return a unit vector with 1.0 at ``index`` and 0.0 elsewhere."""
     v = [0.0] * dim
     v[index] = 1.0
     return v
 
 
 def _normalise(v: list[float]) -> list[float]:
+    """Return an L2-normalised copy of ``v``; zero vectors returned unchanged."""
     mag = math.sqrt(sum(x * x for x in v))
     if mag == 0.0:
         return v
@@ -49,10 +51,11 @@ def tmp_vec_db(tmp_path: Path):
 
 
 def _row(qn: str, idx: int) -> EmbeddingRow:
+    """Build a synthetic EmbeddingRow with a unit vector at dimension ``idx``."""
     return EmbeddingRow(
         qualified_name=qn,
         embedding=_unit_vec(idx),
-        file_path=f"/repo/{qn.split('.')[0]}.py",
+        file_path=f"/repo/{qn.split('.', maxsplit=1)[0]}.py",
         start_line=idx,
         end_line=idx + 5,
         symbol_type="Function",
@@ -129,10 +132,10 @@ def test_should_produce_same_ranking_as_executemany_path(tmp_path: Path) -> None
         # we can simply re-use the public bulk_insert with an env trick.
         # Instead: rely on the documented contract and compare orderings
         # via search results.
-        from codebase_rag.storage import vector_store as _vs
-
         # Temporarily monkeypatch import to force fallback path.
         import builtins
+
+        from codebase_rag.storage import vector_store as _vs
 
         real_import = builtins.__import__
 
