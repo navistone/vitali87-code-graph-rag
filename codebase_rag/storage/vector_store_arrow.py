@@ -1,14 +1,15 @@
-"""Experimental Arrow-staged bulk-insert for the DuckDB vector store.
+"""Arrow-staged bulk-insert for the DuckDB vector store.
 
 This module is **opt-in** and lives separately from ``vector_store.py`` so the
 core path has zero new dependencies.  Install with::
 
     pip install code-graph-rag[arrow]
 
-The columnar staging path bypasses DuckDB's per-row Python-list parameter
-binding for ``FLOAT[768]`` arrays, which microbenches identified as the
-dominant bottleneck of the executemany-based ``bulk_insert`` (see
-ROADMAP F2 / Phase 4).
+When pyarrow is installed, ``vector_store.bulk_insert`` automatically delegates
+here for a ~380× speedup over the executemany fallback (see
+``scripts/BENCH_RESULTS_2026-04-27.md``).  The columnar staging path bypasses
+DuckDB's per-row Python-list parameter binding for ``FLOAT[768]`` arrays,
+which microbenches identified as the dominant bottleneck.
 
 Public API:
     bulk_insert_arrow(conn, rows) -> int
@@ -34,7 +35,8 @@ _EMBEDDING_DIM = 768
 _STAGING = "_vsa_staging"
 
 
-def _import_pyarrow():
+def _import_pyarrow() -> Any:
+    """Import and return the ``pyarrow`` module, raising RuntimeError when absent."""
     try:
         import pyarrow as pa  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover — explicit operator guidance
