@@ -34,6 +34,20 @@ Public API (preserved from the previous backend so callers don't change):
     verify_stored_ids(conn, qualified_names) -> set[str]
     delete_embeddings(conn, qualified_names) -> int
 
+Phase 8 — HNSW scaffold (OFF by default):
+    _ensure_vss_extension(conn)       — INSTALL/LOAD vss idempotently
+    _hnsw_active(conn) -> bool        — reads repo_metadata.hnsw_active
+    create_hnsw_index(conn, ...)      — CREATE INDEX IF NOT EXISTS via HNSW
+
+The HNSW query path is activated only when BOTH of the following are true:
+    1. Global env  HNSW_ENABLED=true
+    2. Per-repo    repo_metadata key "hnsw_active" = "true"
+
+When either gate is false, search_similar falls back to the existing
+brute-force array_cosine_distance path.  Activation triggers (p95 > 200 ms
+or repo > 50k symbols) are not yet met; this scaffold lands off-by-default
+for future operator use.
+
 DuckDB connections are not safe to share across threads; callers should
 open a per-request connection (or a per-thread cursor) and close it
 when done.
@@ -41,6 +55,7 @@ when done.
 from __future__ import annotations
 
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +65,97 @@ if TYPE_CHECKING:
     import duckdb  # noqa: F401  (type-only; actual import is lazy)
 
 _EMBEDDING_DIM = 768
+
+# ---------------------------------------------------------------------------
+# Phase 8 — HNSW scaffold constants
+# ---------------------------------------------------------------------------
+
+_HNSW_INDEX_NAME = "hnsw_function_embed"
+_HNSW_M = 16
+_HNSW_EF_CONSTRUCTION = 200
+
+
+def _ensure_vss_extension(conn: Any) -> None:
+    """Install and load the DuckDB VSS extension idempotently.
+
+    Safe to call multiple times; DuckDB's ``INSTALL`` and ``LOAD`` are no-ops
+    when the extension is already present.
+
+    Also enables ``hnsw_enable_experimental_persistence`` so that HNSW indexes
+    can be created on persistent (file-backed) databases.  This setting is
+    required by DuckDB VSS >= 1.1.3 for any non-in-memory connection; it is
+    harmless on in-memory connections.
+
+    Args:
+        conn: Open connection from ``open_or_create``.
+    """
+    conn.execute("INSTALL vss")
+    conn.execute("LOAD vss")
+    conn.execute("SET hnsw_enable_experimental_persistence = true")
+
+
+def _hnsw_active(conn: Any) -> bool:
+    """Return True only when BOTH activation gates are open.
+
+    Gate 1 — global env: ``HNSW_ENABLED=true`` (case-insensitive).
+    Gate 2 — per-repo:   ``repo_metadata`` row with key ``"hnsw_active"``
+              and value ``"true"`` (case-insensitive).
+
+    Returns False (safe fallback) if either gate is absent or falsy, and
+    also if the ``repo_metadata`` column/row does not exist.
+
+    Args:
+        conn: Open connection from ``open_or_create``.
+
+    Returns:
+        bool: True when HNSW query path should be used; False otherwise.
+    """
+    # Gate 1: global env flag
+    if os.environ.get("HNSW_ENABLED", "false").lower() != "true":
+        return False
+
+    # Gate 2: per-repo metadata flag
+    try:
+        row = conn.execute(
+            "SELECT value FROM repo_metadata WHERE key = 'hnsw_active'"
+        ).fetchone()
+        return bool(row and row[0].lower() == "true")
+    except Exception:
+        # Table missing or transient error — fail closed
+        return False
+
+
+def create_hnsw_index(
+    conn: Any,
+    table: str = "function_embeddings",
+    col: str = "embedding",
+) -> None:
+    """Create the HNSW index idempotently (CREATE INDEX IF NOT EXISTS).
+
+    Loads the VSS extension before issuing DDL.  The index uses cosine
+    distance metric with M=16 and ef_construction=200 as specified in
+    Phase 8 (.planning/phase-plans/PHASE_8_HNSW_VSS.md §5).
+
+    This function operates on the ``embeddings`` table by default.  Pass
+    ``table="embeddings"`` explicitly when calling from application code;
+    the default ``"function_embeddings"`` is kept for backward-compat with
+    any callers that were drafted against an earlier name.
+
+    Args:
+        conn: Open connection from ``open_or_create``.
+        table: Table to index.  Defaults to ``"function_embeddings"`` (alias
+            for ``"embeddings"`` in the HNSW DDL; pass ``"embeddings"`` for
+            the live schema).
+        col: Embedding column name.  Defaults to ``"embedding"``.
+    """
+    _ensure_vss_extension(conn)
+    conn.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS {_HNSW_INDEX_NAME}
+        ON {table} USING HNSW ({col})
+        WITH (metric = 'cosine', M = {_HNSW_M}, ef_construction = {_HNSW_EF_CONSTRUCTION})
+        """
+    )
 
 
 @dataclass
@@ -148,6 +254,25 @@ def open_or_create(path: str | Path) -> Any:
         )
         """
     )
+    # Phase 8 schema migration: add hnsw_active flag column idempotently.
+    # DuckDB does not support ADD COLUMN IF NOT EXISTS, so we guard with a
+    # presence check against information_schema.
+    try:
+        existing_cols = {
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'repo_metadata'"
+            ).fetchall()
+        }
+        if "hnsw_active" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE repo_metadata ADD COLUMN hnsw_active BOOLEAN DEFAULT FALSE"
+            )
+    except Exception:
+        # Non-fatal — hnsw_active is only consulted via _hnsw_active() which
+        # already falls back to False on any exception.
+        pass
     return conn
 
 
@@ -258,6 +383,13 @@ def search_similar(
     cosine similarity in ``[-1, 1]`` (higher = more similar).  We normalise
     the query here defensively in case callers pass an un-normalised vector.
 
+    Phase 8 — HNSW dispatch:
+        When BOTH ``HNSW_ENABLED=true`` (env) AND ``repo_metadata`` key
+        ``"hnsw_active"`` is ``"true"``, the query uses the HNSW index via
+        the ``<=>`` cosine-distance operator (lower = more similar; we invert
+        to a similarity score for API consistency).  Otherwise the existing
+        brute-force ``array_cosine_distance`` path is used unchanged.
+
     Args:
         conn: Open connection from ``open_or_create``.
         query_vec: 768-dim query embedding.
@@ -267,16 +399,33 @@ def search_similar(
         list[SearchResult]: Ranked results, highest similarity first.
     """
     normalised = _l2_normalise(query_vec)
-    rows = conn.execute(
-        """
-        SELECT qualified_name, file_path, start_line, end_line,
-               1.0 - array_cosine_distance(embedding, ?::FLOAT[768]) AS score
-        FROM embeddings
-        ORDER BY score DESC
-        LIMIT ?
-        """,
-        (normalised, int(k)),
-    ).fetchall()
+
+    if _hnsw_active(conn):
+        # HNSW path: <=> is cosine-distance (0 = identical, 2 = opposite).
+        # Invert to similarity for API consistency with the brute-force path.
+        rows = conn.execute(
+            f"""
+            SELECT qualified_name, file_path, start_line, end_line,
+                   1.0 - (embedding <=> ?::FLOAT[{_EMBEDDING_DIM}]) AS score
+            FROM embeddings
+            ORDER BY embedding <=> ?::FLOAT[{_EMBEDDING_DIM}]
+            LIMIT ?
+            """,
+            (normalised, normalised, int(k)),
+        ).fetchall()
+    else:
+        # Brute-force path (default): unchanged from pre-Phase-8 behaviour.
+        rows = conn.execute(
+            f"""
+            SELECT qualified_name, file_path, start_line, end_line,
+                   1.0 - array_cosine_distance(embedding, ?::FLOAT[{_EMBEDDING_DIM}]) AS score
+            FROM embeddings
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (normalised, int(k)),
+        ).fetchall()
+
     return [
         SearchResult(
             qualified_name=r[0],
