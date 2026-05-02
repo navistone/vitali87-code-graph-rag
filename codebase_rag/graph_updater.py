@@ -585,7 +585,7 @@ class GraphUpdater:
             return
 
         try:
-            from .embedder import embed_code, get_embedding_cache
+            from .embedder import embed_code, get_embedding_cache, get_lm_studio_embedder
             from .vector_store import (
                 flush_embeddings,
                 store_embedding_batch,
@@ -605,14 +605,16 @@ class GraphUpdater:
             logger.info(ls.GENERATING_EMBEDDINGS, count=len(results))
             self._emit_progress({"phase": "embedding", "files_total": len(results)})
 
-            embedded_count = 0
-            expected_ids: set[str] = set()
-            batch_buffer: list[tuple[str, list[float], str]] = []
-            batch_size = settings.VECTOR_BATCH_SIZE
-            _total_to_embed = max(len(results), 1)
-            _emit_interval = 50  # emit progress every N embeddings attempted
+            # ------------------------------------------------------------------
+            # Pass 1 — collect eligible symbols (source extraction + triviality
+            # filter).  We do this before touching the embedder so we can hand
+            # the full list of texts to batch_embed in one shot.
+            # ------------------------------------------------------------------
+            import re as _re_anon
 
-            for _embed_idx, row in enumerate(results):
+            eligible: list[tuple[str, str, str]] = []  # (node_id, qname, embed_text)
+
+            for row in results:
                 parsed = self._parse_embedding_result(row)
                 if parsed is None:
                     continue
@@ -628,56 +630,104 @@ class GraphUpdater:
                     logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
                     continue
 
-                if source_code := self._extract_source_code(
+                source_code = self._extract_source_code(
                     qualified_name, file_path, start_line, end_line
-                ):
-                    # Skip trivial functions — inline arrows, 1-line setters,
-                    # stub/mock helpers, empty-state placeholders. Their
-                    # embeddings are near-uniform and crowd real application
-                    # code out of top-k results for any natural-language
-                    # query. Thresholds:
-                    #   <150 non-whitespace chars OR <5 non-blank lines →
-                    #     too trivial (covers `emptyTask`-style React
-                    #     placeholders, one-line setters, stubs)
-                    #   anonymous_LINE_COL pattern → tree-sitter parser
-                    #     fallback for unnamed callbacks (always trivial)
-                    #   duplicated trailing segments (e.g.
-                    #     `useHook.useHook.connect.connect`) → inner-scope
-                    #     closure wrappers the parser emits; always trivial
-                    _stripped = "".join(source_code.split())
-                    _nonblank_lines = [
-                        ln for ln in source_code.splitlines() if ln.strip()
-                    ]
-                    import re as _re_anon
-                    _is_anon = bool(
-                        _re_anon.search(
-                            r"\banonymous_\d+_\d+\b", qualified_name
-                        )
-                    )
-                    _parts = qualified_name.split(".")
-                    _dup_tail = (
-                        len(_parts) >= 2 and _parts[-1] == _parts[-2]
-                    )
-                    if (
-                        _is_anon
-                        or _dup_tail
-                        or len(_stripped) < 150
-                        or len(_nonblank_lines) < 5
-                    ):
-                        logger.debug(
-                            "Skipping trivial function embedding",
-                            name=qualified_name,
-                            chars=len(_stripped),
-                            lines=len(_nonblank_lines),
-                        )
-                        continue
+                )
+                if not source_code:
+                    logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
+                    continue
 
+                # Skip trivial functions — inline arrows, 1-line setters,
+                # stub/mock helpers, empty-state placeholders. Their
+                # embeddings are near-uniform and crowd real application
+                # code out of top-k results for any natural-language
+                # query. Thresholds:
+                #   <150 non-whitespace chars OR <5 non-blank lines →
+                #     too trivial (covers `emptyTask`-style React
+                #     placeholders, one-line setters, stubs)
+                #   anonymous_LINE_COL pattern → tree-sitter parser
+                #     fallback for unnamed callbacks (always trivial)
+                #   duplicated trailing segments (e.g.
+                #     `useHook.useHook.connect.connect`) → inner-scope
+                #     closure wrappers the parser emits; always trivial
+                _stripped = "".join(source_code.split())
+                _nonblank_lines = [
+                    ln for ln in source_code.splitlines() if ln.strip()
+                ]
+                _is_anon = bool(
+                    _re_anon.search(r"\banonymous_\d+_\d+\b", qualified_name)
+                )
+                _parts = qualified_name.split(".")
+                _dup_tail = len(_parts) >= 2 and _parts[-1] == _parts[-2]
+                if (
+                    _is_anon
+                    or _dup_tail
+                    or len(_stripped) < 150
+                    or len(_nonblank_lines) < 5
+                ):
+                    logger.debug(
+                        "Skipping trivial function embedding",
+                        name=qualified_name,
+                        chars=len(_stripped),
+                        lines=len(_nonblank_lines),
+                    )
+                    continue
+
+                embed_text = self._build_embed_text(source_code, docstring)
+                eligible.append((node_id, qualified_name, embed_text))
+
+            if not eligible:
+                logger.info(ls.NO_FUNCTIONS_FOR_EMBEDDING)
+                return
+
+            # ------------------------------------------------------------------
+            # Pass 2 — embed.  Prefer LM Studio batched HTTP when available;
+            # fall back to the in-process torch path (per-symbol) otherwise.
+            # ------------------------------------------------------------------
+            embedded_count = 0
+            expected_ids: set[str] = set()
+            batch_buffer: list[tuple[str, list[float], str]] = []
+            batch_size = settings.VECTOR_BATCH_SIZE
+            _total_to_embed = max(len(eligible), 1)
+            _emit_interval = 50
+
+            lm_embedder = get_lm_studio_embedder()
+
+            if lm_embedder is not None:
+                # Batched LM Studio path — single HTTP request per N symbols.
+                logger.info(
+                    "embedding.lm_studio.batched count=%d batch_size=%d",
+                    len(eligible),
+                    cs.LM_STUDIO_EMBED_BATCH_SIZE,
+                )
+                texts = [et for _, _, et in eligible]
+                embeddings = lm_embedder.batch_embed(
+                    texts, prefix=cs.CODERANK_CODE_PREFIX
+                )
+                if embeddings is not None:
+                    for (node_id, qualified_name, _), embedding in zip(eligible, embeddings):
+                        batch_buffer.append((node_id, embedding, qualified_name))
+                        expected_ids.add(node_id)
+                        if len(batch_buffer) >= batch_size:
+                            embedded_count += store_embedding_batch(batch_buffer)
+                            batch_buffer = []
+                    if batch_buffer:
+                        embedded_count += store_embedding_batch(batch_buffer)
+                        batch_buffer = []
+                    logger.info(
+                        "embedding.lm_studio.done embedded=%d", embedded_count
+                    )
+                else:
+                    # LM Studio batch failed — fall through to per-symbol torch path.
+                    logger.warning(
+                        "LM Studio batch_embed returned None; falling back to in-process embedder"
+                    )
+                    lm_embedder = None
+
+            if lm_embedder is None:
+                # Sequential in-process torch path (original behaviour, preserved).
+                for _embed_idx, (node_id, qualified_name, embed_text) in enumerate(eligible):
                     try:
-                        # Prepend docstring to source so semantic search benefits
-                        # from natural-language descriptions; the helper centralises
-                        # the format so the external embedding subprocess in
-                        # code-indexer-service can stay in sync.
-                        embed_text = self._build_embed_text(source_code, docstring)
                         embedding = embed_code(embed_text)
                         batch_buffer.append((node_id, embedding, qualified_name))
                         expected_ids.add(node_id)
@@ -693,10 +743,9 @@ class GraphUpdater:
                             logger.debug(
                                 ls.EMBEDDING_PROGRESS,
                                 done=embedded_count,
-                                total=len(results),
+                                total=len(eligible),
                             )
 
-                        # Emit per-batch progress every _emit_interval embeddings.
                         if (_embed_idx + 1) % _emit_interval == 0:
                             _pct = 70.0 + ((_embed_idx + 1) / _total_to_embed) * 28.0
                             self._emit_progress({
@@ -709,11 +758,9 @@ class GraphUpdater:
                         logger.warning(
                             ls.EMBEDDING_FAILED, name=qualified_name, error=e
                         )
-                else:
-                    logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
 
-            if batch_buffer:
-                embedded_count += store_embedding_batch(batch_buffer)
+                if batch_buffer:
+                    embedded_count += store_embedding_batch(batch_buffer)
 
             # Persist all in-memory embeddings to disk (numpy files).
             db_path = str(self.ingestor._db_path) if hasattr(self.ingestor, "_db_path") else None
