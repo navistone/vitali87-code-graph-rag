@@ -153,6 +153,10 @@ CODERANK_EMBED_MODEL = "nomic-ai/CodeRankEmbed"
 CODERANK_CODE_PREFIX = "Represent this code snippet: "
 CODERANK_QUERY_PREFIX = "search_query: "
 EMBEDDING_DEFAULT_BATCH_SIZE = 32
+# Batch size for LM Studio HTTP /v1/embeddings calls.  LM Studio supports
+# list input so N=64 texts in one request replaces 64 sequential round-trips.
+# Kept below 128 to stay within the context window of most GGUF models.
+LM_STUDIO_EMBED_BATCH_SIZE = 64
 EMBEDDING_CACHE_FILENAME = ".embedding_cache.json"
 
 KEY_NODES = "nodes"
