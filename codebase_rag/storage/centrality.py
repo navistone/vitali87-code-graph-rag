@@ -7,6 +7,7 @@ by dividing by the maximum observed score so they fuse cleanly with
 cosine similarity.
 """
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,8 +24,8 @@ def compute_pagerank(repo_db_path: str) -> dict[str, float]:
         dict mapping qualified_name → score in [0.0, 1.0].  Empty dict
         when the graph has no CALLS edges (single-file repos, etc.).
     """
-    import real_ladybug as lb
     import networkx as nx
+    import real_ladybug as lb
 
     db = lb.Database(repo_db_path)
     conn = lb.Connection(db)

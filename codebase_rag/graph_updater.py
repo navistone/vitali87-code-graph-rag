@@ -585,7 +585,11 @@ class GraphUpdater:
             return
 
         try:
-            from .embedder import embed_code, get_embedding_cache, get_lm_studio_embedder
+            from .embedder import (
+                embed_code,
+                get_embedding_cache,
+                get_lm_studio_embedder,
+            )
             from .vector_store import (
                 flush_embeddings,
                 store_embedding_batch,
