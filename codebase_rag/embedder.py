@@ -125,7 +125,7 @@ class LMStudioEmbedder:
         self._timeout = timeout
 
     @classmethod
-    def from_env(cls) -> "LMStudioEmbedder | None":
+    def from_env(cls) -> LMStudioEmbedder | None:
         """Construct from ``LM_STUDIO_URL`` / ``LM_STUDIO_EMBED_MODEL`` env vars.
 
         Returns ``None`` when ``LM_STUDIO_URL`` is unset/empty so callers can
@@ -262,7 +262,7 @@ class LMStudioEmbedder:
 
 
 @lru_cache(maxsize=1)
-def get_lm_studio_embedder() -> "LMStudioEmbedder | None":
+def get_lm_studio_embedder() -> LMStudioEmbedder | None:
     """Return a module-level singleton ``LMStudioEmbedder``, or ``None``.
 
     Cached so the /v1/models probe only fires once per process lifetime.
