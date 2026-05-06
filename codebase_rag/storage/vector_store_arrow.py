@@ -86,6 +86,10 @@ def bulk_insert_arrow(conn: Any, rows: list[EmbeddingRow]) -> int:
     start_lines = [int(r.start_line) for r in rows]
     end_lines = [int(r.end_line) for r in rows]
     indexed_at = [int(r.indexed_at or now) for r in rows]
+    # BUC-1518 C2: persist content_hash so future incremental re-indexes can
+    # skip rows whose source range hasn't changed.  None on legacy callers
+    # (Arrow handles None via nullable string).
+    content_hashes = [r.content_hash for r in rows]
 
     embedding_type = pa.list_(pa.float32(), _EMBEDDING_DIM)
     embedding_array = pa.array(embeddings, type=embedding_type)
@@ -99,6 +103,7 @@ def bulk_insert_arrow(conn: Any, rows: list[EmbeddingRow]) -> int:
             "start_line": pa.array(start_lines, type=pa.int32()),
             "end_line": pa.array(end_lines, type=pa.int32()),
             "indexed_at": pa.array(indexed_at, type=pa.int64()),
+            "content_hash": pa.array(content_hashes, type=pa.string()),
         }
     )
 
@@ -116,14 +121,15 @@ def bulk_insert_arrow(conn: Any, rows: list[EmbeddingRow]) -> int:
                 f"""
                 INSERT INTO embeddings
                     (qualified_name, embedding, symbol_type, file_path,
-                     start_line, end_line, indexed_at)
+                     start_line, end_line, indexed_at, content_hash)
                 SELECT qualified_name,
                        embedding::FLOAT[{_EMBEDDING_DIM}],
                        symbol_type,
                        file_path,
                        start_line,
                        end_line,
-                       indexed_at
+                       indexed_at,
+                       content_hash
                 FROM {_STAGING}
                 """
             )
