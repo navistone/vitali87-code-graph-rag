@@ -186,6 +186,56 @@ class TestLadybugIndexAndQuery:
         rows = _cypher(db_path, "MATCH (f:Function) RETURN count(f) AS cnt")
         assert rows[0]["cnt"] >= 3, f"Expected >=3 functions after reopen; got {rows}"
 
+    def test_calls_edges_carry_provenance(self, tiny_repo: Path, db_path: str) -> None:
+        """BUC-1603: CALLS edges must carry file_path / line_start / col_start
+        after indexing.  This is the headline acceptance criterion — querying
+        the persisted graph must surface call-site provenance without
+        re-parsing source.
+
+        The ``main.py`` fixture has::
+
+            line 1: from utils import add, subtract
+            line 2: (blank)
+            line 3: (blank)
+            line 4: def run() -> None:
+            line 5:     result = add(1, 2)        # CALLS edge: run -> add
+            line 6:     diff = subtract(result, 1)  # CALLS edge: run -> subtract
+            line 7:     print(diff)               # CALLS edge: run -> print (builtin, may resolve to ExternalPackage)
+        """
+        _run_indexing(tiny_repo, db_path)
+
+        rows = _cypher(
+            db_path,
+            "MATCH (caller)-[r:CALLS]->(callee) "
+            "WHERE callee.qualified_name CONTAINS 'add' "
+            "  AND NOT callee.qualified_name CONTAINS 'subtract' "
+            "RETURN r.file_path AS file_path, "
+            "       r.line_start AS line_start, "
+            "       r.col_start AS col_start, "
+            "       caller.qualified_name AS caller_qn, "
+            "       callee.qualified_name AS callee_qn",
+        )
+        assert rows, f"Expected at least one CALLS edge to add(); got {rows}"
+
+        # Filter to the run() -> add() edge specifically.
+        run_to_add = [r for r in rows if "run" in (r["caller_qn"] or "")]
+        assert run_to_add, f"Expected run() -> add() edge; got {rows}"
+
+        edge = run_to_add[0]
+        assert edge["file_path"] == "main.py", (
+            f"file_path mismatch: {edge!r}"
+        )
+        # ``add(1, 2)`` is on line 5 (1-indexed) of main.py.
+        assert edge["line_start"] == 5, f"line_start mismatch: {edge!r}"
+        # The call sits after 4 spaces of indent + ``result = ``,
+        # i.e. column 13 (zero-indexed).  We do not pin the exact column
+        # because the call_node may start at the ``add`` identifier or
+        # at the parenthesized argument list depending on tree-sitter
+        # query shape — assert it's a positive offset on an indented line.
+        assert edge["col_start"] >= 4, (
+            f"col_start should reflect indented call site; got {edge!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Vector store round-trip (same DB as structural graph)

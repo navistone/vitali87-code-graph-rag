@@ -161,13 +161,24 @@ _REL_TABLES: list[str] = [
     """CREATE REL TABLE IF NOT EXISTS DEFINES_METHOD(
         FROM Class TO Method
     )""",
+    # BUC-1603: CALLS edges carry call-site provenance (file + line + column)
+    # so downstream consumers (blast-radius, agent context bundles) can show
+    # "this call happens at <file>:<line>" without re-parsing source.  The
+    # three columns are nullable from the reader's POV — when a row was
+    # written before this migration ran it surfaces as the empty string /
+    # zero (see ``_REL_ALTERS`` below for the backfill defaults).  Future
+    # work (BUC-1603-followup): add ``line_end`` / ``col_end`` for full
+    # range coverage; intentionally punted to keep this change minimal.
     """CREATE REL TABLE IF NOT EXISTS CALLS(
         FROM Function TO Function,
         FROM Function TO Method,
         FROM Method TO Function,
         FROM Method TO Method,
         FROM Module TO Function,
-        FROM Module TO Method
+        FROM Module TO Method,
+        file_path STRING DEFAULT '',
+        line_start INT64 DEFAULT 0,
+        col_start INT64 DEFAULT 0
     )""",
     """CREATE REL TABLE IF NOT EXISTS IMPORTS(
         FROM Module TO Module,
@@ -187,6 +198,40 @@ _REL_TABLES: list[str] = [
         FROM File TO Package
     )""",
 ]
+
+# ---------------------------------------------------------------------------
+# Backfill ALTERs for existing databases (BUC-1603)
+# ---------------------------------------------------------------------------
+# Existing CALLS rows written before BUC-1603 lack the provenance columns.
+# LadybugDB (Kuzu fork) supports ``ALTER REL TABLE <name> ADD <col> <type>``
+# but, unlike ``CREATE``, it has no ``IF NOT EXISTS`` guard.  We run these
+# in a try/except and treat "already exists" / "duplicate column" errors as
+# success.  For fresh DBs the columns are declared inline in ``_REL_TABLES``
+# so each ALTER is a no-op (and the idempotent-success branch fires).  For
+# pre-BUC-1603 DBs the ALTER backfills the columns with empty-string / 0
+# defaults, preserving every existing CALLS row.
+#
+# Consumers (e.g. code-indexer-service) should re-index after deploy to
+# populate the new columns on existing edges — there is no in-place backfill
+# of file_path / line_start / col_start for rows written before the parser
+# wiring landed.  This is flagged as a follow-up: a future migration could
+# add a "schema_version" metadata table and trigger a re-index, but is out
+# of scope here.
+_REL_ALTERS: list[str] = [
+    "ALTER TABLE CALLS ADD file_path STRING DEFAULT ''",
+    "ALTER TABLE CALLS ADD line_start INT64 DEFAULT 0",
+    "ALTER TABLE CALLS ADD col_start INT64 DEFAULT 0",
+]
+
+# Substrings that indicate "the column you tried to add already exists".
+# LadybugDB error messages vary across versions, so match common fragments
+# rather than an exact string.
+_ALTER_IDEMPOTENT_SUBSTRINGS: tuple[str, ...] = (
+    "already exists",
+    "duplicate",
+    "already has property",
+)
+
 
 def migrate(db_path: str) -> None:
     """Run schema migration on the given LadybugDB database path.
@@ -215,5 +260,23 @@ def migrate(db_path: str) -> None:
         table_name = ddl.split("TABLE IF NOT EXISTS")[1].split("(")[0].strip()
         conn.execute(ddl)
         logger.debug(f"  Rel table: {table_name}")
+
+    # BUC-1603: backfill file_path / line_start / col_start on CALLS for
+    # DBs that were created before this migration ran.  Each ALTER is
+    # independent — a failure on one column should not prevent the next
+    # from being tried.  Idempotent "already exists" errors are swallowed.
+    for alter_ddl in _REL_ALTERS:
+        try:
+            conn.execute(alter_ddl)
+            logger.debug(f"  Applied ALTER: {alter_ddl}")
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(s in err_str for s in _ALTER_IDEMPOTENT_SUBSTRINGS):
+                logger.debug(f"  ALTER skipped (column already present): {alter_ddl}")
+            else:
+                # Hard fail: do not silently swallow a schema migration
+                # error that isn't the idempotent already-exists case.
+                logger.error(f"  ALTER failed: {alter_ddl}: {e}")
+                raise
 
     logger.info("LadybugDB schema migration complete ✓")
