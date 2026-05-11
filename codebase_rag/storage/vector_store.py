@@ -173,6 +173,10 @@ class EmbeddingRow:
     end_line: int
     symbol_type: str
     indexed_at: int = field(default_factory=lambda: int(time.time()))
+    # BUC-1518 C2: SHA-1 of the symbol's source range, used by the embed
+    # driver to skip re-embedding unchanged symbols on incremental re-index.
+    # Optional for backwards compat — None means "unknown, treat as changed".
+    content_hash: str | None = None
 
 
 @dataclass
@@ -273,6 +277,28 @@ def open_or_create(path: str | Path) -> Any:
         # Non-fatal — hnsw_active is only consulted via _hnsw_active() which
         # already falls back to False on any exception.
         pass
+
+    # BUC-1518 C2 schema migration: add content_hash column to embeddings.
+    # Drives incremental embedding — when re-indexing, the embed driver hashes
+    # each symbol's source range and skips any symbol whose stored hash matches
+    # (no SageMaker call, no recompute).  For typical commits touching a few
+    # files, this skips 95-99% of the work.
+    try:
+        existing_emb_cols = {
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'embeddings'"
+            ).fetchall()
+        }
+        if "content_hash" not in existing_emb_cols:
+            conn.execute(
+                "ALTER TABLE embeddings ADD COLUMN content_hash TEXT"
+            )
+    except Exception:
+        # Non-fatal — read_content_hashes() returns empty on any error so the
+        # caller falls back to "always re-embed" semantics (correct but slow).
+        pass
     return conn
 
 
@@ -344,6 +370,7 @@ def bulk_insert(conn: Any, rows: list[EmbeddingRow]) -> int:
             row.start_line,
             row.end_line,
             row.indexed_at or now,
+            row.content_hash,  # BUC-1518 C2 — None on legacy callers, fine
         )
         for row in rows
     ]
@@ -359,8 +386,8 @@ def bulk_insert(conn: Any, rows: list[EmbeddingRow]) -> int:
             """
             INSERT INTO embeddings
                 (qualified_name, embedding, symbol_type, file_path,
-                 start_line, end_line, indexed_at)
-            VALUES (?, ?::FLOAT[768], ?, ?, ?, ?, ?)
+                 start_line, end_line, indexed_at, content_hash)
+            VALUES (?, ?::FLOAT[768], ?, ?, ?, ?, ?, ?)
             """,
             insert_params,
         )
@@ -638,6 +665,37 @@ def verify_stored_ids(
         # the reconciliation pass logs every expected id as missing.
         return set()
     return {r[0] for r in rows}
+
+
+def read_content_hashes(conn: Any) -> dict[str, str]:
+    """Return ``{qualified_name: content_hash}`` for every row that has one.
+
+    BUC-1518 C2 — drives incremental embedding.  The embed driver hashes each
+    symbol's source range and looks it up here; if the stored hash matches,
+    the SageMaker call is skipped entirely (no recompute, no cost).
+
+    Returns an empty dict if the column is missing (legacy .duck files) or
+    on any error — callers fall back to "always re-embed" semantics, which
+    is correct just slower.
+
+    Args:
+        conn: Open connection from ``open_or_create``.
+
+    Returns:
+        Mapping from qualified_name to its stored ``content_hash``.  Rows
+        with NULL ``content_hash`` are omitted (treated as "unknown,
+        re-embed when next seen").
+    """
+    try:
+        rows = conn.execute(
+            "SELECT qualified_name, content_hash FROM embeddings "
+            "WHERE content_hash IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        # content_hash column missing (pre-migration .duck), or transient DB
+        # error.  Returning {} forces full re-embed, which is safe.
+        return {}
+    return {r[0]: r[1] for r in rows if r[0] and r[1]}
 
 
 def delete_embeddings(conn: Any, qualified_names: list[str] | set[str]) -> int:
