@@ -23,6 +23,7 @@ from codebase_rag.storage.vector_store import (
     insert_embedding,
     open_or_create,
     read_all_metadata,
+    read_content_hashes,
     read_metadata,
     row_count,
     search_similar,
@@ -333,3 +334,74 @@ def test_should_return_correct_count_after_inserts(tmp_vec_db) -> None:
     ]
     bulk_insert(tmp_vec_db, rows)
     assert row_count(tmp_vec_db) == 7
+
+
+# ---------------------------------------------------------------------------
+# read_content_hashes (BUC-1518 C2 — incremental embed)
+# ---------------------------------------------------------------------------
+
+
+def test_should_return_empty_dict_when_no_rows_present(tmp_vec_db) -> None:
+    assert read_content_hashes(tmp_vec_db) == {}
+
+
+def test_should_return_qname_to_hash_map_when_rows_have_content_hash(
+    tmp_vec_db,
+) -> None:
+    rows = [
+        EmbeddingRow(
+            qualified_name="pkg.a.fn",
+            embedding=_unit_vec(0),
+            file_path="/repo/a.py",
+            start_line=1,
+            end_line=5,
+            symbol_type="Function",
+            content_hash="aaa111",
+        ),
+        EmbeddingRow(
+            qualified_name="pkg.b.fn",
+            embedding=_unit_vec(1),
+            file_path="/repo/b.py",
+            start_line=1,
+            end_line=5,
+            symbol_type="Function",
+            content_hash="bbb222",
+        ),
+    ]
+    bulk_insert(tmp_vec_db, rows)
+    hashes = read_content_hashes(tmp_vec_db)
+    assert hashes == {"pkg.a.fn": "aaa111", "pkg.b.fn": "bbb222"}
+
+
+def test_should_omit_rows_with_null_content_hash(tmp_vec_db) -> None:
+    rows = [
+        EmbeddingRow(
+            qualified_name="legacy.fn",
+            embedding=_unit_vec(0),
+            file_path="/repo/legacy.py",
+            start_line=1,
+            end_line=5,
+            symbol_type="Function",
+            content_hash=None,
+        ),
+        EmbeddingRow(
+            qualified_name="new.fn",
+            embedding=_unit_vec(1),
+            file_path="/repo/new.py",
+            start_line=1,
+            end_line=5,
+            symbol_type="Function",
+            content_hash="ccc333",
+        ),
+    ]
+    bulk_insert(tmp_vec_db, rows)
+    hashes = read_content_hashes(tmp_vec_db)
+    assert hashes == {"new.fn": "ccc333"}
+    assert "legacy.fn" not in hashes
+
+
+def test_should_return_empty_dict_when_db_query_fails(tmp_vec_db) -> None:
+    # Close the connection — any subsequent execute() raises, exercising the
+    # except branch.  The contract is "return {} on any error".
+    tmp_vec_db.close()
+    assert read_content_hashes(tmp_vec_db) == {}
