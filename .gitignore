@@ -23,6 +23,7 @@ PROJECT.md
 .DS_Store
 .pypi_cache.json
 .cgr-hash-cache.json
+.cgr-stat-cache.json
 .omc
 site/
 .cgr/
