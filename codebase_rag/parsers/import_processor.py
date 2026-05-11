@@ -20,6 +20,7 @@ from .stdlib_extractor import (
     load_persistent_cache,
     save_persistent_cache,
 )
+from .tsconfig_resolver import TsconfigResolver
 from .utils import get_query_cursor, safe_decode_text, safe_decode_with_fallback
 
 
@@ -33,6 +34,7 @@ class ImportProcessor:
         "stdlib_extractor",
         "_is_local_module_cached",
         "_is_local_java_import_cached",
+        "_tsconfig_resolver",
     )
 
     def __init__(
@@ -66,6 +68,8 @@ class ImportProcessor:
 
         self._is_local_module_cached = _is_local_module_cached
         self._is_local_java_import_cached = _is_local_java_import_cached
+        # Lazy: only constructed when JS/TS code is actually being resolved.
+        self._tsconfig_resolver: TsconfigResolver | None = None
 
         load_persistent_cache()
 
@@ -442,6 +446,12 @@ class ImportProcessor:
 
     def _resolve_js_module_path(self, import_path: str, current_module: str) -> str:
         if not import_path.startswith(cs.PATH_CURRENT_DIR):
+            # Try tsconfig.json compilerOptions.paths aliases first. Falls back
+            # to the existing slash-to-dot transformation (which produces an
+            # External(...) node downstream) when no alias matches.
+            alias_qn = self._resolve_via_tsconfig(import_path, current_module)
+            if alias_qn is not None:
+                return alias_qn
             return import_path.replace(cs.SEPARATOR_SLASH, cs.SEPARATOR_DOT)
 
         current_parts = current_module.split(cs.SEPARATOR_DOT)[:-1]
@@ -457,6 +467,67 @@ class ImportProcessor:
                 current_parts.append(part)
 
         return cs.SEPARATOR_DOT.join(current_parts)
+
+    def _resolve_via_tsconfig(
+        self, import_path: str, current_module: str
+    ) -> str | None:
+        """Try to resolve ``import_path`` as a tsconfig path alias.
+
+        Returns a dotted ``project_name.<parts>`` qualified name when an alias
+        matched and the target resolved to an on-disk file inside the repo;
+        otherwise returns ``None`` so the caller can fall back to the existing
+        slash-to-dot transformation.
+        """
+
+        source_file = self._module_qn_to_source_path(current_module)
+        if source_file is None:
+            return None
+
+        if self._tsconfig_resolver is None:
+            self._tsconfig_resolver = TsconfigResolver(self.repo_path)
+
+        resolved = self._tsconfig_resolver.resolve_alias(import_path, source_file)
+        if resolved is None:
+            return None
+
+        try:
+            relative = resolved.relative_to(self.repo_path.resolve())
+        except ValueError:
+            # Alias pointed outside the repo (e.g. node_modules) -- let the
+            # fallback path treat it as an external module.
+            return None
+
+        # Strip the file's extension to produce a module qname identical to
+        # what ``definition_processor`` records for that file.
+        parts = list(relative.with_suffix("").parts)
+        if not parts:
+            return None
+        return cs.SEPARATOR_DOT.join([self.project_name, *parts])
+
+    def _module_qn_to_source_path(self, module_qn: str) -> Path | None:
+        """Reverse a dotted module qname back into a probable on-disk path.
+
+        ``module_qn`` is ``project_name.<relative parts of file without suffix>``.
+        Each TypeScript / JavaScript extension is probed; first hit wins.
+        Returns ``None`` when no file is found -- the caller treats that as a
+        signal to skip tsconfig resolution.
+        """
+
+        parts = module_qn.split(cs.SEPARATOR_DOT)
+        if len(parts) < 2 or parts[0] != self.project_name:
+            return None
+        relative = Path(*parts[1:])
+        base = self.repo_path / relative
+        for ext in (
+            cs.EXT_TS,
+            cs.EXT_TSX,
+            cs.EXT_JS,
+            cs.EXT_JSX,
+        ):
+            candidate = base.parent / (base.name + ext)
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _parse_js_import_clause(
         self, clause_node: Node, source_module: str, current_module: str

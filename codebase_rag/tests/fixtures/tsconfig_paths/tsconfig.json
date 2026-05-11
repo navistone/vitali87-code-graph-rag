@@ -1,0 +1,11 @@
+{
+  // Acceptance fixture for BUC-1600 — TypeScript path alias resolution.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@components/*": ["src/components/*"],
+      "shared": ["packages/shared/index.ts"],
+    },
+  },
+}
