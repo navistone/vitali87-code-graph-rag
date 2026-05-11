@@ -430,6 +430,17 @@ IMP_JS_NAMESPACE = "JS namespace import: {name} -> {module}"
 IMP_JS_REQUIRE = "JS require: {var} -> {module}"
 IMP_JS_REEXPORT = "JS re-export: {exported} -> {module}.{original}"
 IMP_JS_NAMESPACE_REEXPORT = "JS namespace re-export: * -> {module}"
+IMP_REEXPORT_REGISTERED = "  Re-export registered: {module}.{exported} -> {target}"
+IMP_REEXPORT_EDGE = "  Re-export edge: {from_module} -> {to_module}"
+IMP_REEXPORT_PY_ALL_FILTERED = (
+    "  __all__ filter excluded {symbol} from re-exports in {module}"
+)
+CALL_REEXPORT_RESOLVED = (
+    "Re-export chain resolved: {call_name} via {hops} hop(s) -> {final_qn}"
+)
+CALL_REEXPORT_CYCLE = (
+    "Re-export cycle detected resolving {call_name}; aborting at {module}"
+)
 IMP_JAVA_WILDCARD = "Java wildcard import: {path}.*"
 IMP_JAVA_STATIC = "Java static import: {name} -> {path}"
 IMP_JAVA_IMPORT = "Java import: {name} -> {path}"

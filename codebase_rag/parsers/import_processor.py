@@ -31,6 +31,7 @@ class ImportProcessor:
         "ingestor",
         "function_registry",
         "import_mapping",
+        "re_export_mapping",
         "stdlib_extractor",
         "_is_local_module_cached",
         "_is_local_java_import_cached",
@@ -49,6 +50,13 @@ class ImportProcessor:
         self.ingestor = ingestor
         self.function_registry = function_registry
         self.import_mapping: dict[str, dict[str, str]] = {}
+        # (H) BUC-1610: re-export sites. Per module, maps the locally-exported
+        # (H) name to the qualified name of the actual definition (or the next
+        # (H) re-export chain link). Populated alongside import_mapping for
+        # (H) TS barrels (export {X} from '...') and Python __init__.py
+        # (H) modules (from .submod import X, filtered by __all__ when present).
+        # (H) Used by CallResolver to follow chains across barrels.
+        self.re_export_mapping: dict[str, dict[str, str]] = {}
         self.stdlib_extractor = StdlibExtractor(
             function_registry, repo_path, project_name
         )
@@ -107,6 +115,7 @@ class ImportProcessor:
         lang_config = queries[language]["config"]
 
         self.import_mapping[module_qn] = {}
+        self.re_export_mapping[module_qn] = {}
 
         try:
             cursor = get_query_cursor(imports_query)
@@ -136,6 +145,14 @@ class ImportProcessor:
                 module=module_qn,
             )
 
+            # (H) BUC-1610: for Python __init__.py modules we register every
+            # (H) `from .x import Y` as a re-export, then filter that set by
+            # (H) __all__ when present. Done here (after the per-language
+            # (H) parse) because the __all__ assignment is independent of
+            # (H) the import statements and may appear in any order.
+            if language == cs.SupportedLanguage.PYTHON:
+                self._apply_python_all_filter(root_node, module_qn)
+
             if self.ingestor:
                 for full_name in self.import_mapping[module_qn].values():
                     module_path = self._resolve_module_path(
@@ -162,8 +179,133 @@ class ImportProcessor:
                         full_name=full_name,
                     )
 
+                # (H) BUC-1610: emit one RE_EXPORTS edge per distinct target
+                # (H) module that this module re-exports from, so the graph
+                # (H) captures the barrel / package-init pass-through
+                # (H) topology directly. Symbol-level chaining at lookup time
+                # (H) lives in CallResolver.
+                emitted_reexport_targets: set[str] = set()
+                for target_qn in self.re_export_mapping[module_qn].values():
+                    target_module = self._target_module_for_reexport(target_qn)
+                    if not target_module or target_module == module_qn:
+                        continue
+                    if target_module in emitted_reexport_targets:
+                        continue
+                    emitted_reexport_targets.add(target_module)
+                    self.ingestor.ensure_relationship_batch(
+                        (
+                            cs.NodeLabel.MODULE,
+                            cs.KEY_QUALIFIED_NAME,
+                            module_qn,
+                        ),
+                        cs.RelationshipType.RE_EXPORTS,
+                        (
+                            cs.NodeLabel.MODULE,
+                            cs.KEY_QUALIFIED_NAME,
+                            target_module,
+                        ),
+                    )
+                    logger.debug(
+                        ls.IMP_REEXPORT_EDGE,
+                        from_module=module_qn,
+                        to_module=target_module,
+                    )
+
         except Exception as e:
             logger.warning(ls.IMP_PARSE_FAILED, module=module_qn, error=e)
+
+    @staticmethod
+    def _target_module_for_reexport(target_qn: str) -> str | None:
+        """Parent module qname for a re-exported symbol qname.
+
+        ``target_qn`` is the qualified name of either a symbol (e.g.
+        ``project.math_utils.add``) or, for namespace re-exports, the module
+        itself. We return the dotted prefix up to the last component; this
+        works for both because the re-export consumer's resolution always
+        walks "<module>.<symbol>" pairs. Returns ``None`` for atomic names
+        with no separator (no parent module to point at).
+        """
+
+        if not target_qn or cs.SEPARATOR_DOT not in target_qn:
+            return None
+        return target_qn.rsplit(cs.SEPARATOR_DOT, 1)[0]
+
+    def _apply_python_all_filter(self, root_node: Node, module_qn: str) -> None:
+        """Filter re_export_mapping by ``__all__`` when the module declares it.
+
+        Per Python semantics, when a module sets ``__all__ = [...]`` it
+        explicitly constrains the names exposed via ``from module import *``
+        (and convention also gates ``from module import X``). We treat the
+        listed names as the authoritative re-export set: names imported into
+        the module but absent from ``__all__`` stay in ``import_mapping``
+        (so calls *within* the module still resolve) but are removed from
+        ``re_export_mapping`` (so consumers do not chain through to them).
+
+        Returns silently when no ``__all__`` assignment is found — re-exports
+        registered during ``_parse_python_imports`` remain as-is.
+        """
+
+        declared = self._extract_python_all_names(root_node)
+        if declared is None:
+            return
+
+        site = self.re_export_mapping.get(module_qn)
+        if not site:
+            return
+
+        # Wildcards (`*<module>`) stay regardless — they expose every symbol
+        # of the source module, which __all__ filters at lookup time, not at
+        # declaration time.
+        for name in list(site.keys()):
+            if name.startswith("*"):
+                continue
+            if name not in declared:
+                del site[name]
+                logger.debug(
+                    ls.IMP_REEXPORT_PY_ALL_FILTERED,
+                    symbol=name,
+                    module=module_qn,
+                )
+
+    @staticmethod
+    def _extract_python_all_names(root_node: Node) -> set[str] | None:
+        """Return the set of names listed in ``__all__`` at module top level.
+
+        Returns ``None`` when no ``__all__`` assignment is present, so the
+        caller can distinguish "no filter declared" from "filter declared,
+        empty list". Only handles the simple ``__all__ = ["a", "b"]`` /
+        tuple form, which is the dominant convention; dynamic mutation
+        (``__all__.append(...)``) is intentionally out of scope for v0.
+        """
+
+        names: set[str] | None = None
+        for child in root_node.children:
+            if child.type != cs.TS_EXPRESSION_STATEMENT:
+                continue
+            for grandchild in child.children:
+                if grandchild.type != cs.TS_PY_ASSIGNMENT:
+                    continue
+                left = grandchild.child_by_field_name(cs.FIELD_LEFT)
+                right = grandchild.child_by_field_name(cs.FIELD_RIGHT)
+                if not left or not right:
+                    continue
+                if left.type != cs.TS_PY_IDENTIFIER:
+                    continue
+                if safe_decode_text(left) != "__all__":
+                    continue
+                # tree-sitter-python tags tuples as "tuple" and sets as
+                # "set"; both are valid __all__ containers in the wild.
+                if right.type not in (cs.TS_PY_LIST, "tuple", "set"):
+                    continue
+                # First __all__ assignment wins.
+                if names is None:
+                    names = set()
+                for element in right.children:
+                    if element.type in (cs.TS_STRING, cs.TS_STRING_LITERAL):
+                        text = safe_decode_text(element)
+                        if text:
+                            names.add(text.strip("'\""))
+        return names
 
     def _parse_python_imports(self, captures: dict, module_qn: str) -> None:
         all_imports = captures.get(cs.CAPTURE_IMPORT, []) + captures.get(
@@ -390,13 +532,29 @@ class ImportProcessor:
         if is_wildcard:
             wildcard_key = f"*{base_module}"
             self.import_mapping[module_qn][wildcard_key] = base_module
+            # (H) BUC-1610: a wildcard `from .x import *` re-exports everything
+            # (H) from base_module, mirroring TS `export * from`. We register
+            # (H) the wildcard sentinel so suffix-matching resolution can find
+            # (H) any symbol through this chain link.
+            self.re_export_mapping[module_qn][wildcard_key] = base_module
             logger.debug(ls.IMP_WILDCARD_IMPORT, module=base_module)
             return
 
         for local_name, original_name in imported_items:
             full_name = f"{base_module}{cs.SEPARATOR_DOT}{original_name}"
             self.import_mapping[module_qn][local_name] = full_name
+            # (H) BUC-1610: every `from X import Y` makes Y accessible through
+            # (H) the current module as a re-export. The __all__ filter (when
+            # (H) declared) is applied after parsing completes — see
+            # (H) ``_apply_python_all_filter``.
+            self.re_export_mapping[module_qn][local_name] = full_name
             logger.debug(ls.IMP_FROM_IMPORT, local=local_name, full=full_name)
+            logger.debug(
+                ls.IMP_REEXPORT_REGISTERED,
+                module=module_qn,
+                exported=local_name,
+                target=full_name,
+            )
 
     def _resolve_relative_import(self, relative_node: Node, module_qn: str) -> str:
         module_parts = module_qn.split(cs.SEPARATOR_DOT)[1:]
@@ -636,7 +794,18 @@ class ImportProcessor:
             if child.type == cs.TS_ASTERISK:
                 wildcard_key = f"*{source_module}"
                 self.import_mapping[current_module][wildcard_key] = source_module
+                # (H) BUC-1610: a namespace re-export (`export * from './x'`)
+                # (H) re-exports every public symbol of source_module under
+                # (H) the same name. We mirror the wildcard sentinel here so
+                # (H) the resolver can match by suffix.
+                self.re_export_mapping[current_module][wildcard_key] = source_module
                 logger.debug(ls.IMP_JS_NAMESPACE_REEXPORT, module=source_module)
+                logger.debug(
+                    ls.IMP_REEXPORT_REGISTERED,
+                    module=current_module,
+                    exported=wildcard_key,
+                    target=source_module,
+                )
             elif child.type == cs.TS_EXPORT_CLAUSE:
                 for grandchild in child.children:
                     if grandchild.type == cs.TS_EXPORT_SPECIFIER:
@@ -649,14 +818,29 @@ class ImportProcessor:
                                 if alias_node
                                 else original_name
                             )
-                            self.import_mapping[current_module][exported_name] = (
+                            target_qn = (
                                 f"{source_module}{cs.SEPARATOR_DOT}{original_name}"
+                            )
+                            self.import_mapping[current_module][exported_name] = (
+                                target_qn
+                            )
+                            # (H) BUC-1610: register this as a re-export so the
+                            # (H) consumer of `current_module` can chain through
+                            # (H) to `target_qn` rather than dead-ending here.
+                            self.re_export_mapping[current_module][exported_name] = (
+                                target_qn
                             )
                             logger.debug(
                                 ls.IMP_JS_REEXPORT,
                                 exported=exported_name,
                                 module=source_module,
                                 original=original_name,
+                            )
+                            logger.debug(
+                                ls.IMP_REEXPORT_REGISTERED,
+                                module=current_module,
+                                exported=exported_name,
+                                target=target_qn,
                             )
 
     def _parse_java_imports(self, captures: dict, module_qn: str) -> None:
