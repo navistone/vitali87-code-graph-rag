@@ -58,6 +58,12 @@ class CallProcessor:
         relative_path = file_path.relative_to(self.repo_path)
         logger.debug(ls.CALL_PROCESSING_FILE, path=relative_path)
 
+        # BUC-1603: provenance file_path is stored as a repo-relative POSIX
+        # path so it is portable across OSes and stable under repo moves.
+        # We compute it once here and thread it through every call-site
+        # ingestion below.
+        call_site_file_path = relative_path.as_posix()
+
         try:
             module_qn = cs.SEPARATOR_DOT.join(
                 [self.project_name] + list(relative_path.with_suffix("").parts)
@@ -67,9 +73,15 @@ class CallProcessor:
                     [self.project_name] + list(relative_path.parent.parts)
                 )
 
-            self._process_calls_in_functions(root_node, module_qn, language, queries)
-            self._process_calls_in_classes(root_node, module_qn, language, queries)
-            self._process_module_level_calls(root_node, module_qn, language, queries)
+            self._process_calls_in_functions(
+                root_node, module_qn, language, queries, call_site_file_path
+            )
+            self._process_calls_in_classes(
+                root_node, module_qn, language, queries, call_site_file_path
+            )
+            self._process_module_level_calls(
+                root_node, module_qn, language, queries, call_site_file_path
+            )
 
         except Exception as e:
             logger.error(ls.CALL_PROCESSING_FAILED, path=file_path, error=e)
@@ -80,6 +92,7 @@ class CallProcessor:
         module_qn: str,
         language: cs.SupportedLanguage,
         queries: dict[cs.SupportedLanguage, LanguageQueries],
+        call_site_file_path: str,
     ) -> None:
         result = get_function_captures(root_node, language, queries)
         if not result:
@@ -109,6 +122,7 @@ class CallProcessor:
                     module_qn,
                     language,
                     queries,
+                    call_site_file_path=call_site_file_path,
                 )
 
     def _get_rust_impl_class_name(self, class_node: Node) -> str | None:
@@ -138,6 +152,7 @@ class CallProcessor:
         module_qn: str,
         language: cs.SupportedLanguage,
         queries: dict[cs.SupportedLanguage, LanguageQueries],
+        call_site_file_path: str,
     ) -> None:
         method_query = queries[language][cs.QUERY_FUNCTIONS]
         if not method_query:
@@ -160,6 +175,7 @@ class CallProcessor:
                 language,
                 queries,
                 class_qn,
+                call_site_file_path=call_site_file_path,
             )
 
     def _process_calls_in_classes(
@@ -168,6 +184,7 @@ class CallProcessor:
         module_qn: str,
         language: cs.SupportedLanguage,
         queries: dict[cs.SupportedLanguage, LanguageQueries],
+        call_site_file_path: str,
     ) -> None:
         query = queries[language][cs.QUERY_CLASSES]
         if not query:
@@ -185,7 +202,12 @@ class CallProcessor:
             class_qn = f"{module_qn}{cs.SEPARATOR_DOT}{class_name}"
             if body_node := class_node.child_by_field_name(cs.FIELD_BODY):
                 self._process_methods_in_class(
-                    body_node, class_qn, module_qn, language, queries
+                    body_node,
+                    class_qn,
+                    module_qn,
+                    language,
+                    queries,
+                    call_site_file_path,
                 )
 
     def _process_module_level_calls(
@@ -194,9 +216,16 @@ class CallProcessor:
         module_qn: str,
         language: cs.SupportedLanguage,
         queries: dict[cs.SupportedLanguage, LanguageQueries],
+        call_site_file_path: str,
     ) -> None:
         self._ingest_function_calls(
-            root_node, module_qn, cs.NodeLabel.MODULE, module_qn, language, queries
+            root_node,
+            module_qn,
+            cs.NodeLabel.MODULE,
+            module_qn,
+            language,
+            queries,
+            call_site_file_path=call_site_file_path,
         )
 
     def _get_call_target_name(self, call_node: Node) -> str | None:
@@ -262,6 +291,8 @@ class CallProcessor:
         language: cs.SupportedLanguage,
         queries: dict[cs.SupportedLanguage, LanguageQueries],
         class_context: str | None = None,
+        *,
+        call_site_file_path: str = "",
     ) -> None:
         calls_query = queries[language].get(cs.QUERY_CALLS)
         if not calls_query:
@@ -321,10 +352,27 @@ class CallProcessor:
                 callee_qn=callee_qn,
             )
 
+            # BUC-1603: tree-sitter ``start_point`` is a ``(row, column)`` tuple
+            # of zero-indexed offsets.  We convert ``row`` to a 1-indexed
+            # ``line_start`` (matches Function/Method node ``start_line`` and
+            # editor conventions); ``col_start`` stays zero-indexed because
+            # that is what every downstream LSP consumer expects.  When the
+            # node lacks position info (defensive — should not happen with
+            # tree-sitter) we fall back to (0, 0) which sorts to the schema
+            # DEFAULT and signals "unknown" to the reader.
+            start_point = getattr(call_node, "start_point", None)
+            line_start = (start_point[0] + 1) if start_point else 0
+            col_start = start_point[1] if start_point else 0
+
             self.ingestor.ensure_relationship_batch(
                 (caller_type, cs.KEY_QUALIFIED_NAME, caller_qn),
                 cs.RelationshipType.CALLS,
                 (callee_type, cs.KEY_QUALIFIED_NAME, callee_qn),
+                properties={
+                    "file_path": call_site_file_path,
+                    "line_start": line_start,
+                    "col_start": col_start,
+                },
             )
 
     def _build_nested_qualified_name(
