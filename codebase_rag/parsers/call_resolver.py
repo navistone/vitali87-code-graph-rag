@@ -387,6 +387,66 @@ class CallResolver:
         if imported_qn in self.function_registry:
             logger.debug(ls.CALL_DIRECT_IMPORT, call_name=call_name, qn=imported_qn)
             return self.function_registry[imported_qn], imported_qn
+
+        # (H) BUC-1610: the direct lookup landed on a re-export site
+        # (e.g. ``barrel.add`` rather than ``math_utils.add``). Follow the
+        # re-export chain hop-by-hop until either the qn appears in
+        # function_registry, a cycle is detected, or a hop has no further
+        # re-export link.
+        if final_qn := self._follow_reexport_chain(imported_qn, call_name):
+            return self.function_registry[final_qn], final_qn
+        return None
+
+    # Max hops we are willing to walk through re-export chains before
+    # giving up. Real codebases rarely exceed depth 2-3; cap at 16 to keep
+    # pathological / adversarial inputs bounded.
+    _REEXPORT_MAX_HOPS = 16
+
+    def _follow_reexport_chain(
+        self, start_qn: str, call_name: str
+    ) -> str | None:
+        """Walk RE_EXPORTS chain until reaching a registered symbol or dead end.
+
+        Each chain hop splits ``current_qn`` into ``(module, symbol)`` and
+        looks up that module's ``re_export_mapping[symbol]``. The visited
+        set is keyed on the full qn so any revisit short-circuits cleanly,
+        whether the cycle is direct (A->B->A) or longer.
+        """
+
+        re_export_mapping = self.import_processor.re_export_mapping
+        visited: set[str] = {start_qn}
+        current_qn = start_qn
+        for hop in range(1, self._REEXPORT_MAX_HOPS + 1):
+            if cs.SEPARATOR_DOT not in current_qn:
+                return None
+            module_qn, symbol = current_qn.rsplit(cs.SEPARATOR_DOT, 1)
+            site = re_export_mapping.get(module_qn)
+            if not site or symbol not in site:
+                return None
+            next_qn = site[symbol]
+            if next_qn in visited:
+                logger.debug(
+                    ls.CALL_REEXPORT_CYCLE,
+                    call_name=call_name,
+                    module=module_qn,
+                )
+                return None
+            visited.add(next_qn)
+            if next_qn in self.function_registry:
+                logger.debug(
+                    ls.CALL_REEXPORT_RESOLVED,
+                    call_name=call_name,
+                    hops=hop,
+                    final_qn=next_qn,
+                )
+                return next_qn
+            current_qn = next_qn
+        # Hop budget exhausted — treat as unresolved, mirror cycle handling.
+        logger.debug(
+            ls.CALL_REEXPORT_CYCLE,
+            call_name=call_name,
+            module=current_qn,
+        )
         return None
 
     def _try_resolve_qualified_call(
