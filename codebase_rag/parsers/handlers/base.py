@@ -64,6 +64,16 @@ class BaseLanguageHandler:
     def extract_decorators(self, node: ASTNode) -> list[str]:
         return []
 
+    # (H) BUC-1602 — function classification.
+    # ``is_async`` and ``is_generator`` are language-specific and default
+    # to False on the base handler.  Python overrides both; other languages
+    # can opt in later (JS ``async function``, Rust ``async fn``, etc.).
+    def is_async_function(self, node: ASTNode) -> bool:
+        return False
+
+    def is_generator_function(self, node: ASTNode) -> bool:
+        return False
+
     def build_nested_function_qn(
         self,
         func_node: ASTNode,

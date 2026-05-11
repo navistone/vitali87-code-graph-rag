@@ -101,6 +101,16 @@ def ingest_method(
 
     decorators = extract_decorators_func(method_node) if extract_decorators_func else []
 
+    # (H) BUC-1602: classify methods as async / generator.  Python is the only
+    # language that opts in today; for every other language these are False.
+    is_async = False
+    is_generator = False
+    if language == cs.SupportedLanguage.PYTHON:
+        from .handlers.python import is_async_function, is_generator_function
+
+        is_async = is_async_function(method_node)
+        is_generator = is_generator_function(method_node)
+
     method_props: PropertyDict = {
         cs.KEY_QUALIFIED_NAME: method_qn,
         cs.KEY_NAME: method_name,
@@ -108,6 +118,8 @@ def ingest_method(
         cs.KEY_START_LINE: method_node.start_point[0] + 1,
         cs.KEY_END_LINE: method_node.end_point[0] + 1,
         cs.KEY_DOCSTRING: get_docstring_func(method_node),
+        cs.KEY_IS_ASYNC: is_async,
+        cs.KEY_IS_GENERATOR: is_generator,
     }
 
     logger.info(logs.METHOD_FOUND.format(name=method_name, qn=method_qn))

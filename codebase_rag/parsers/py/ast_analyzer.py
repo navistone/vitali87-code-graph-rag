@@ -87,7 +87,12 @@ class PythonAstAnalyzerMixin(_AstBase):
 
             if node_type == cs.TS_PY_ASSIGNMENT:
                 assignments.append(current)
-            elif node_type == cs.TS_PY_LIST_COMPREHENSION:
+            elif node_type in cs.TS_PY_COMPREHENSION_TYPES:
+                # (H) BUC-1602: list, dict, set, and generator comprehensions
+                # all introduce their own scope.  Previously only
+                # ``list_comprehension`` was recognised, which meant loop
+                # variables in dict/set/gen comprehensions silently leaked
+                # out (and worse, were never visible at all to type inference).
                 comprehensions.append(current)
             elif node_type == cs.TS_PY_FOR_STATEMENT:
                 for_statements.append(current)
@@ -100,8 +105,17 @@ class PythonAstAnalyzerMixin(_AstBase):
         for assignment in assignments:
             self._process_assignment_complex(assignment, local_var_types, module_qn)
 
+        # (H) BUC-1602: comprehensions create a sub-scope.  Per Python 3
+        # semantics, the loop variable of a comprehension is local to the
+        # comprehension itself and must not bleed into the enclosing
+        # function's locals.  We hand the analyzer a *copy* of the local
+        # var map so any bindings it records are discarded after the
+        # comprehension finishes.  This used to silently corrupt outer-scope
+        # type inference (`[x for x in items]` made ``x`` look defined in the
+        # enclosing function, mis-binding later references).
         for comp in comprehensions:
-            self._analyze_comprehension(comp, local_var_types, module_qn)
+            comp_scope = dict(local_var_types)
+            self._analyze_comprehension(comp, comp_scope, module_qn)
 
         for for_stmt in for_statements:
             self._analyze_for_loop(for_stmt, local_var_types, module_qn)
