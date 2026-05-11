@@ -400,6 +400,13 @@ KEY_PARAMETERS = "parameters"
 KEY_DECORATORS = "decorators"
 KEY_DOCSTRING = "docstring"
 KEY_IS_EXPORTED = "is_exported"
+# (H) BUC-1602: classify Python functions as async / generator / async-generator.
+# These default to False on the node and are set by language-specific handlers
+# (Python only today). Downstream consumers that key on is_async + is_generator
+# can distinguish plain ``async def`` from async generators (``async def`` with
+# ``yield``) without re-parsing the source.
+KEY_IS_ASYNC = "is_async"
+KEY_IS_GENERATOR = "is_generator"
 
 # (H) Embedding text template — docstring is prepended to source as a
 # comment so the semantic encoder sees both the natural-language
@@ -2132,8 +2139,27 @@ TS_PY_ATTRIBUTE = "attribute"
 TS_PY_CALL = "call"
 TS_PY_LIST = "list"
 TS_PY_LIST_COMPREHENSION = "list_comprehension"
+# (H) BUC-1602: dict / set / generator comprehension siblings of list_comprehension.
+# Tree-sitter-python emits distinct node types for each; without these the
+# variable analyzer only walks list comprehensions and ignores the other forms.
+TS_PY_DICTIONARY_COMPREHENSION = "dictionary_comprehension"
+TS_PY_SET_COMPREHENSION = "set_comprehension"
+TS_PY_GENERATOR_EXPRESSION = "generator_expression"
+TS_PY_COMPREHENSION_TYPES = (
+    TS_PY_LIST_COMPREHENSION,
+    TS_PY_DICTIONARY_COMPREHENSION,
+    TS_PY_SET_COMPREHENSION,
+    TS_PY_GENERATOR_EXPRESSION,
+)
 TS_PY_FOR_STATEMENT = "for_statement"
 TS_PY_FOR_IN_CLAUSE = "for_in_clause"
+# (H) BUC-1602: tokens used to detect ``async def`` / ``yield`` in
+# tree-sitter-python.  ``async`` is a sibling child of ``function_definition``;
+# ``yield`` is the wrapping expression node (and the leaf keyword) inside the
+# function body.
+TS_PY_ASYNC = "async"
+TS_PY_YIELD = "yield"
+TS_PY_LAMBDA = "lambda"
 TS_PY_ASSIGNMENT = "assignment"
 TS_PY_CLASS_DEFINITION = "class_definition"
 TS_PY_BLOCK = "block"

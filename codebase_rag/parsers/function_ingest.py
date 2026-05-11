@@ -264,6 +264,11 @@ class FunctionIngestMixin:
             cs.KEY_END_LINE: func_node.end_point[0] + 1,
             cs.KEY_DOCSTRING: self._get_docstring(func_node),
             cs.KEY_IS_EXPORTED: resolution.is_exported,
+            # (H) BUC-1602: distinguish ``async def`` and generator functions
+            # so downstream consumers can classify async-generators correctly
+            # (both flags True) and avoid mis-binding plain ``async def`` callees.
+            cs.KEY_IS_ASYNC: self._handler.is_async_function(func_node),
+            cs.KEY_IS_GENERATOR: self._handler.is_generator_function(func_node),
         }
 
     def _create_function_relationships(
