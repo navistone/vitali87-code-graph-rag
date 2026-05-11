@@ -322,18 +322,34 @@ class CallResolver:
     ) -> ResolveResult | None:
         """Tagged sibling of ``_try_resolve_via_imports``.
 
-        Splits the three sub-paths that the untagged variant collapses
-        into one return value:
-          - direct import   → ("exact", 1.0)
-          - qualified call  → ("exact", 1.0)
-          - wildcard import → ("wildcard", 0.5)
+        Splits the sub-paths that the untagged variant collapses into one
+        return value:
+          - direct import (no chain)            → ("exact",    1.0)
+          - re-export chain, named hops only    → ("exact",    1.0)
+          - re-export chain crossing a wildcard → ("wildcard", 0.5)  (BUC-1617)
+          - qualified call                      → ("exact",    1.0)
+          - ``import *`` wildcard fallback      → ("wildcard", 0.5)
         """
         if module_qn not in self.import_processor.import_mapping:
             return None
 
         import_map = self.import_processor.import_mapping[module_qn]
 
-        if result := self._try_resolve_direct_import(call_name, import_map):
+        # BUC-1617: direct imports + re-export chains can legitimately
+        # cross a wildcard sentinel (``export * from`` /
+        # ``from .x import *``) on the way to a registered symbol.  When
+        # they do, downgrade the tag from ``"exact"`` to ``"wildcard"``
+        # so downstream confidence filters can de-prioritize the binding
+        # relative to a fully-named chain.  Pure-named chains (and direct
+        # hits) keep their ``"exact"`` / ``1.0`` provenance.
+        if tagged := self._try_resolve_direct_import_with_wildcard_flag(
+            call_name, import_map
+        ):
+            result, via_wildcard = tagged
+            if via_wildcard:
+                return ResolveResult.from_tuple(
+                    result, RESOLVED_VIA_WILDCARD, CONFIDENCE_WILDCARD
+                )
             return ResolveResult.from_tuple(
                 result, RESOLVED_VIA_EXACT, CONFIDENCE_EXACT
             )
@@ -442,8 +458,43 @@ class CallResolver:
         # re-export chain hop-by-hop until either the qn appears in
         # function_registry, a cycle is detected, or a hop has no further
         # re-export link.
-        if final_qn := self._follow_reexport_chain(imported_qn, call_name):
+        chained = self._follow_reexport_chain(imported_qn, call_name)
+        if chained is not None:
+            final_qn, _via_wildcard = chained
             return self.function_registry[final_qn], final_qn
+        return None
+
+    def _try_resolve_direct_import_with_wildcard_flag(
+        self, call_name: str, import_map: dict[str, str]
+    ) -> tuple[tuple[str, str], bool] | None:
+        """Tagged sibling of :meth:`_try_resolve_direct_import`.
+
+        Mirrors the untagged dispatch exactly but also surfaces whether the
+        winning resolution traversed a wildcard re-export sentinel.  The
+        wildcard flag is what lets the provenance dispatcher downgrade the
+        emitted ``resolved_via`` tag from ``"exact"`` (named re-export
+        chain only) to ``"wildcard"`` (BUC-1617 — at least one hop went
+        through ``export * from`` / ``from .x import *``).
+
+        Returns ``(callee, via_wildcard)`` on success, ``None`` on miss.
+        """
+        if call_name not in import_map:
+            return None
+        imported_qn = import_map[call_name]
+        if imported_qn in self.function_registry:
+            logger.debug(ls.CALL_DIRECT_IMPORT, call_name=call_name, qn=imported_qn)
+            return (
+                (self.function_registry[imported_qn], imported_qn),
+                False,
+            )
+
+        chained = self._follow_reexport_chain(imported_qn, call_name)
+        if chained is not None:
+            final_qn, via_wildcard = chained
+            return (
+                (self.function_registry[final_qn], final_qn),
+                via_wildcard,
+            )
         return None
 
     # Max hops we are willing to walk through re-export chains before
@@ -453,49 +504,135 @@ class CallResolver:
 
     def _follow_reexport_chain(
         self, start_qn: str, call_name: str
-    ) -> str | None:
+    ) -> tuple[str, bool] | None:
         """Walk RE_EXPORTS chain until reaching a registered symbol or dead end.
 
         Each chain hop splits ``current_qn`` into ``(module, symbol)`` and
-        looks up that module's ``re_export_mapping[symbol]``. The visited
+        looks up that module's ``re_export_mapping[symbol]``.  The visited
         set is keyed on the full qn so any revisit short-circuits cleanly,
         whether the cycle is direct (A->B->A) or longer.
+
+        BUC-1617: when the named lookup fails at a hop, fall back to the
+        wildcard sentinels (``*<target_module>``) registered for that
+        module.  Each wildcard target is probed recursively for the same
+        symbol; the first registered hit wins.  A wildcard hop downgrades
+        the chain's overall confidence — the second element of the return
+        tuple is ``True`` whenever any hop went through a wildcard
+        sentinel.  Cycle detection and the 16-hop ceiling are shared with
+        the named chain via a single visited-set and depth counter, so
+        cyclic wildcards (A export * from B, B export * from A) cannot
+        infinite-loop.
+
+        Returns ``(final_qn, via_wildcard)`` on success, ``None`` on dead
+        end / cycle / depth-budget exhaustion.
         """
 
         re_export_mapping = self.import_processor.re_export_mapping
         visited: set[str] = {start_qn}
-        current_qn = start_qn
-        for hop in range(1, self._REEXPORT_MAX_HOPS + 1):
-            if cs.SEPARATOR_DOT not in current_qn:
-                return None
-            module_qn, symbol = current_qn.rsplit(cs.SEPARATOR_DOT, 1)
-            site = re_export_mapping.get(module_qn)
-            if not site or symbol not in site:
-                return None
+        return self._walk_reexport(
+            start_qn,
+            call_name,
+            re_export_mapping,
+            visited,
+            hops_remaining=self._REEXPORT_MAX_HOPS,
+            via_wildcard=False,
+        )
+
+    def _walk_reexport(
+        self,
+        current_qn: str,
+        call_name: str,
+        re_export_mapping: dict[str, dict[str, str]],
+        visited: set[str],
+        hops_remaining: int,
+        via_wildcard: bool,
+    ) -> tuple[str, bool] | None:
+        """Recursive helper for :meth:`_follow_reexport_chain`.
+
+        Implemented as a depth-bounded walk that probes the named symbol
+        at each hop first, then fans out across wildcard sentinels
+        registered for the same module.  The recursive call shares the
+        single ``visited`` set and ``hops_remaining`` counter across all
+        branches so the global 16-hop ceiling holds even when wildcard
+        fan-out widens the search.
+        """
+        if hops_remaining <= 0:
+            logger.debug(
+                ls.CALL_REEXPORT_CYCLE,
+                call_name=call_name,
+                module=current_qn,
+            )
+            return None
+        if cs.SEPARATOR_DOT not in current_qn:
+            return None
+
+        module_qn, symbol = current_qn.rsplit(cs.SEPARATOR_DOT, 1)
+        site = re_export_mapping.get(module_qn)
+
+        if site is not None and symbol in site:
             next_qn = site[symbol]
-            if next_qn in visited:
+            if next_qn not in visited:
+                visited.add(next_qn)
+                if next_qn in self.function_registry:
+                    logger.debug(
+                        ls.CALL_REEXPORT_RESOLVED,
+                        call_name=call_name,
+                        hops=self._REEXPORT_MAX_HOPS - hops_remaining + 1,
+                        final_qn=next_qn,
+                    )
+                    return next_qn, via_wildcard
+                if result := self._walk_reexport(
+                    next_qn,
+                    call_name,
+                    re_export_mapping,
+                    visited,
+                    hops_remaining - 1,
+                    via_wildcard,
+                ):
+                    return result
+            else:
                 logger.debug(
                     ls.CALL_REEXPORT_CYCLE,
                     call_name=call_name,
                     module=module_qn,
                 )
-                return None
-            visited.add(next_qn)
-            if next_qn in self.function_registry:
+
+        # BUC-1617: try wildcard sentinels (``*<target_module>``).  Each
+        # wildcard sentinel exposes every public name of its target, so
+        # re-probe the *same* symbol under each candidate module.  The
+        # shared visited-set + hops_remaining is what keeps the cycle and
+        # depth guarantees from BUC-1610 intact across the fan-out.
+        if site is None:
+            return None
+        for key, wildcard_target_module in site.items():
+            if not key.startswith("*"):
+                continue
+            candidate_qn = f"{wildcard_target_module}{cs.SEPARATOR_DOT}{symbol}"
+            if candidate_qn in visited:
+                logger.debug(
+                    ls.CALL_REEXPORT_CYCLE,
+                    call_name=call_name,
+                    module=wildcard_target_module,
+                )
+                continue
+            visited.add(candidate_qn)
+            if candidate_qn in self.function_registry:
                 logger.debug(
                     ls.CALL_REEXPORT_RESOLVED,
                     call_name=call_name,
-                    hops=hop,
-                    final_qn=next_qn,
+                    hops=self._REEXPORT_MAX_HOPS - hops_remaining + 1,
+                    final_qn=candidate_qn,
                 )
-                return next_qn
-            current_qn = next_qn
-        # Hop budget exhausted — treat as unresolved, mirror cycle handling.
-        logger.debug(
-            ls.CALL_REEXPORT_CYCLE,
-            call_name=call_name,
-            module=current_qn,
-        )
+                return candidate_qn, True
+            if result := self._walk_reexport(
+                candidate_qn,
+                call_name,
+                re_export_mapping,
+                visited,
+                hops_remaining - 1,
+                via_wildcard=True,
+            ):
+                return result
         return None
 
     def _try_resolve_qualified_call(
