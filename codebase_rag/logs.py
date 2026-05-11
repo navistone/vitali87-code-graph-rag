@@ -656,6 +656,11 @@ INCREMENTAL_FORCE = "Force mode enabled, bypassing hash cache"
 FILE_HASH_UNCHANGED = "File unchanged (hash match): {path}"
 FILE_HASH_CHANGED = "File changed (hash mismatch): {path}"
 FILE_HASH_NEW = "New file detected: {path}"
+STAT_CACHE_LOADED = "Loaded stat cache with {count} entries from {path}"
+STAT_CACHE_LOAD_FAILED = "Failed to load stat cache from {path}: {error}"
+STAT_CACHE_SAVED = "Saved stat cache with {count} entries to {path}"
+STAT_CACHE_SAVE_FAILED = "Failed to save stat cache to {path}: {error}"
+STAT_CACHE_HITS = "Stat-cache hits: {hits}/{total} files skipped SHA-256"
 
 # (H) Exclude prompt logs
 EXCLUDE_INVALID_INDEX = "Invalid index: {index} (out of range)"

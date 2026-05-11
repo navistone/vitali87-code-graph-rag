@@ -4,6 +4,7 @@ import sys
 import time as _time
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, ItemsView, KeysView
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from loguru import logger
@@ -37,6 +38,44 @@ from .utils.path_utils import should_skip_path
 from .utils.source_extraction import extract_source_with_fallback
 
 type FileHashCache = dict[str, str]
+
+
+@dataclass(slots=True)
+class StatEntry:
+    """One row of the stat-cache: enough to decide whether SHA-256 is required.
+
+    `mtime_ns` is the POSIX modification time in nanoseconds (st_mtime_ns).
+    `size` is the file size in bytes (st_size).
+    `sha` is the SHA-256 hex digest captured the last time the file's stat
+    fingerprint matched. The SHA stays the source of truth — stat is only a
+    pre-filter that lets us skip the read+hash on unchanged files.
+
+    Edge cases handled by the comparison logic in `_should_compute_sha`:
+
+    * **Mtime regression** (e.g. `git clone --depth` resets mtime to checkout
+      time, or a file is restored from backup with an older mtime). The cached
+      mtime no longer matches — SHA is recomputed, which is the safe action.
+    * **Mtime liar** (some filesystems round mtime to 1–2 s precision; a fast
+      edit can preserve mtime). We tolerate sub-millisecond jitter via
+      `STAT_CACHE_MTIME_TOLERANCE_NS` but still require `size` equality, so an
+      edit that changes file length will always invalidate the entry. An edit
+      that preserves both mtime (within tolerance) AND size will slip through
+      — this is the inherent ceiling of stat-based detection; the SHA cache
+      remains the authority for any code path that reads back the hash.
+    """
+
+    mtime_ns: int
+    size: int
+    sha: str
+
+
+type FileStatCache = dict[str, StatEntry]
+
+# Sidecar cache files that should never be scanned as input. Used by
+# `_collect_eligible_files` to skip self-referential entries.
+_SIDECAR_CACHE_FILENAMES: frozenset[str] = frozenset(
+    {cs.HASH_CACHE_FILENAME, cs.STAT_CACHE_FILENAME}
+)
 
 
 class FunctionRegistryTrie:
@@ -267,6 +306,67 @@ def _save_hash_cache(cache_path: Path, hashes: FileHashCache) -> None:
         logger.warning(ls.HASH_CACHE_SAVE_FAILED, path=cache_path, error=e)
 
 
+def _load_stat_cache(cache_path: Path) -> FileStatCache:
+    """Load the stat-cache sidecar. Missing or malformed → empty dict.
+
+    Rows missing any required field are silently dropped — never raise here;
+    a bad stat cache must degrade gracefully to a full re-hash, not fail the
+    index run.
+    """
+    if not cache_path.is_file():
+        return {}
+    try:
+        with cache_path.open(encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return {}
+        out: FileStatCache = {}
+        for key, val in raw.items():
+            if not isinstance(val, dict):
+                continue
+            mtime = val.get("mtime_ns")
+            size = val.get("size")
+            sha = val.get("sha")
+            if (
+                isinstance(mtime, int)
+                and isinstance(size, int)
+                and isinstance(sha, str)
+            ):
+                out[key] = StatEntry(mtime_ns=mtime, size=size, sha=sha)
+        logger.info(ls.STAT_CACHE_LOADED, count=len(out), path=cache_path)
+        return out
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(ls.STAT_CACHE_LOAD_FAILED, path=cache_path, error=e)
+        return {}
+
+
+def _save_stat_cache(cache_path: Path, entries: FileStatCache) -> None:
+    """Persist the stat-cache as JSON. Failures are non-fatal."""
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {key: asdict(entry) for key, entry in entries.items()}
+        with cache_path.open("w", encoding="utf-8") as f:
+            json.dump(serializable, f, indent=2)
+        logger.info(ls.STAT_CACHE_SAVED, count=len(entries), path=cache_path)
+    except OSError as e:
+        logger.warning(ls.STAT_CACHE_SAVE_FAILED, path=cache_path, error=e)
+
+
+def _stat_matches(cached: StatEntry, mtime_ns: int, size: int) -> bool:
+    """Decide whether a cached stat entry still describes the on-disk file.
+
+    Size must match exactly. Mtime must match within
+    `STAT_CACHE_MTIME_TOLERANCE_NS` to tolerate filesystem-level rounding
+    (FAT/exFAT, some network mounts). A cached mtime *greater* than the
+    current mtime — the regression case, e.g. a `git clone --depth` checkout
+    or a file restored from backup — fails this check, so SHA is recomputed.
+    That is the safe behaviour.
+    """
+    if cached.size != size:
+        return False
+    return abs(cached.mtime_ns - mtime_ns) <= cs.STAT_CACHE_MTIME_TOLERANCE_NS
+
+
 class GraphUpdater:
     def __init__(
         self,
@@ -430,7 +530,7 @@ class GraphUpdater:
             try:
                 if (
                     filepath.is_file()
-                    and filepath.name != cs.HASH_CACHE_FILENAME
+                    and filepath.name not in _SIDECAR_CACHE_FILENAMES
                     and not should_skip_path(
                         filepath,
                         self.repo_path,
@@ -450,7 +550,12 @@ class GraphUpdater:
 
     def _process_files(self, force: bool = False) -> None:
         cache_path = self.repo_path / cs.HASH_CACHE_FILENAME
+        stat_cache_path = self.repo_path / cs.STAT_CACHE_FILENAME
         old_hashes = _load_hash_cache(cache_path) if not force else {}
+        # Stat cache is the fast pre-filter sitting in front of the SHA cache.
+        # When `force=True` we deliberately skip loading it — caller wants a
+        # full re-hash. See BUC-1612.
+        old_stats = _load_stat_cache(stat_cache_path) if not force else {}
         if force:
             logger.info(ls.INCREMENTAL_FORCE)
 
@@ -459,8 +564,10 @@ class GraphUpdater:
         self._emit_progress({"phase": "discovering", "files_total": len(eligible_files)})
 
         new_hashes: FileHashCache = {}
+        new_stats: FileStatCache = {}
         skipped_count = 0
         changed_count = 0
+        stat_hit_count = 0  # files where stat-cache let us skip SHA entirely
 
         current_file_keys: set[str] = set()
 
@@ -475,8 +582,45 @@ class GraphUpdater:
             current_file_keys.add(file_key)
             _files_scanned += 1
 
-            current_hash = _hash_file(filepath)
+            # Stage 1 — stat() the file. Cheap (one syscall) compared to
+            # reading every byte for SHA-256.
+            try:
+                st = filepath.stat()
+            except OSError as exc:
+                # File vanished between scan and stat; treat as if it never
+                # existed in this run. Will be removed from cache naturally
+                # because we don't add it to new_hashes/new_stats.
+                logger.warning(
+                    "File disappeared before stat during scan: %s (%s)",
+                    file_key,
+                    exc,
+                )
+                current_file_keys.discard(file_key)
+                continue
+
+            mtime_ns = st.st_mtime_ns
+            size = st.st_size
+
+            cached_stat = old_stats.get(file_key) if not force else None
+            current_hash: str | None = None
+
+            if cached_stat is not None and _stat_matches(cached_stat, mtime_ns, size):
+                # Fast path — stat fingerprint unchanged. Trust the cached SHA;
+                # do NOT read the file. This is the whole point of the layer.
+                current_hash = cached_stat.sha
+                stat_hit_count += 1
+            else:
+                # Slow path — stat-cache miss or mismatch. Compute SHA.
+                # Edge case (`git clone --depth`): mtime regresses to checkout
+                # time, so the cached_stat won't match. We pay the SHA cost
+                # once; the new stat entry persists and subsequent runs hit
+                # the fast path again.
+                current_hash = _hash_file(filepath)
+
             new_hashes[file_key] = current_hash
+            new_stats[file_key] = StatEntry(
+                mtime_ns=mtime_ns, size=size, sha=current_hash
+            )
 
             if (
                 not force
@@ -535,8 +679,13 @@ class GraphUpdater:
             logger.info(ls.INCREMENTAL_SKIPPED, count=skipped_count)
         if changed_count > 0:
             logger.info(ls.INCREMENTAL_CHANGED, count=changed_count)
+        if _total_files > 0:
+            logger.info(
+                ls.STAT_CACHE_HITS, hits=stat_hit_count, total=_total_files
+            )
 
         _save_hash_cache(cache_path, new_hashes)
+        _save_stat_cache(stat_cache_path, new_stats)
 
     def _process_single_file(self, filepath: Path) -> None:
         lang_config = get_language_spec(filepath.suffix)

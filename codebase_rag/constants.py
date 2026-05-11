@@ -1615,6 +1615,16 @@ GEMFILE_GEM_PREFIX = "gem "
 
 # (H) Incremental update hash cache
 HASH_CACHE_FILENAME = ".cgr-hash-cache.json"
+# Stat-cache sidecar — stores (mtime_ns, size, sha) per file so unchanged files
+# skip the SHA-256 read entirely. SHA cache (above) is still the authoritative
+# fingerprint; stat cache is a fast pre-filter. See BUC-1612.
+STAT_CACHE_FILENAME = ".cgr-stat-cache.json"
+# Tolerance (ns) for mtime comparison. Some filesystems (FAT/exFAT, certain
+# network mounts) round mtime to 1–2 second precision and can produce a
+# "nanosecond lie" where two writes look identical. 1 ms = 1_000_000 ns is a
+# conservative bound: still cheap, still catches sub-millisecond edits in
+# practice, but tolerates rounding noise.
+STAT_CACHE_MTIME_TOLERANCE_NS = 1_000_000
 
 # (H) Import processor cache config
 IMPORT_CACHE_TTL = 3600
