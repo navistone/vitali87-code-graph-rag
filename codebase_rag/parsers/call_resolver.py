@@ -12,6 +12,7 @@ from .. import logs as ls
 from ..types_defs import FunctionRegistryTrieProtocol, NodeType
 from .import_processor import ImportProcessor
 from .py import resolve_class_name
+from .rebind_processor import RebindRegistry
 from .type_inference import TypeInferenceEngine
 
 _SEPARATOR_PATTERN = re.compile(r"[.:]|::")
@@ -121,6 +122,7 @@ class CallResolver:
         "import_processor",
         "type_inference",
         "class_inheritance",
+        "rebind_registry",
     )
 
     def __init__(
@@ -129,11 +131,58 @@ class CallResolver:
         import_processor: ImportProcessor,
         type_inference: TypeInferenceEngine,
         class_inheritance: dict[str, list[str]],
+        rebind_registry: RebindRegistry | None = None,
     ) -> None:
         self.function_registry = function_registry
         self.import_processor = import_processor
         self.type_inference = type_inference
         self.class_inheritance = class_inheritance
+        # BUC-1611: optional — when supplied, ``apply_rebind`` swaps the
+        # candidate callee qname for any registered module-level
+        # monkey-patch.  ``None`` (default, no-op) preserves the
+        # pre-1611 resolution path for callers that don't need it.
+        self.rebind_registry = rebind_registry
+
+    def apply_rebind(
+        self, callee_type: str, callee_qn: str
+    ) -> tuple[str, str, str | None]:
+        """Reroute a resolved callee through any matching module-level rebinding.
+
+        Returns ``(callee_type, callee_qn, resolved_via)`` where
+        ``resolved_via`` is:
+          * ``"rebound"`` — a REBIND was applied; ``callee_qn`` now
+            points at the replacement target.
+          * ``None`` — no rebinding registered; the input is returned
+            unchanged.
+
+        BUC-1609 reserves the string ``"rebound"`` as a CALLS-edge
+        provenance value.  Until BUC-1609 ships, downstream consumers
+        that don't yet read the ``resolved_via`` property will silently
+        ignore it; the rebind itself still takes effect because the
+        callee qname is swapped before the edge is written.
+        """
+        if self.rebind_registry is None or not callee_qn:
+            return callee_type, callee_qn, None
+
+        rebind = self.rebind_registry.latest_for(callee_qn)
+        if rebind is None:
+            return callee_type, callee_qn, None
+
+        # Translate the registry's NodeType enum back into the string
+        # node label that CALLS-edge emission expects.  We only support
+        # Method/Function rebinds in v1 (anything else is rejected by
+        # the rebind processor's RHS resolver).
+        new_label = (
+            cs.NodeLabel.METHOD
+            if rebind.new_target_type == NodeType.METHOD
+            else cs.NodeLabel.FUNCTION
+        )
+        logger.debug(
+            "[BUC-1611] Rebind applied: {orig} -> {new} (resolved_via=rebound)",
+            orig=callee_qn,
+            new=rebind.new_target_qn,
+        )
+        return new_label, rebind.new_target_qn, "rebound"
 
     def _resolve_class_qn_from_type(
         self, var_type: str, import_map: dict[str, str], module_qn: str

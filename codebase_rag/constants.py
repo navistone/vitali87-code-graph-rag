@@ -387,6 +387,7 @@ class RelationshipType(StrEnum):
     OVERRIDES = "OVERRIDES"
     CALLS = "CALLS"
     DEPENDS_ON_EXTERNAL = "DEPENDS_ON_EXTERNAL"
+    REBINDS = "REBINDS"  # BUC-1611: module-level method rebinding
 
 
 NODE_PROJECT = NodeLabel.PROJECT
@@ -1975,6 +1976,12 @@ TS_FIELD_FUNCTION = "function"
 TS_FIELD_BODY = "body"
 TS_FIELD_LEFT = "left"
 TS_FIELD_RIGHT = "right"
+# BUC-1611: tree-sitter Python's ``attribute`` node has a child field
+# also called ``attribute`` (the trailing identifier after the dot).
+# Aliased here so the rebind processor doesn't conflate the node type
+# ``TS_PY_ATTRIBUTE`` with the field-name lookup.  Same literal string
+# under the hood — different semantic role.
+TS_FIELD_ATTRIBUTE = "attribute"
 
 QUERY_CAPTURE_CLASS = "class"
 QUERY_CAPTURE_FUNCTION = "function"

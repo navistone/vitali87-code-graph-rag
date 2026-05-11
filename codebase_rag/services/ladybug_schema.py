@@ -18,7 +18,7 @@ Schema layout:
     Relationship tables
         CONTAINS_FILE, CONTAINS_FOLDER, CONTAINS_PACKAGE, CONTAINS_MODULE,
         DEFINES, DEFINES_METHOD, CALLS, IMPORTS, INHERITS, IMPLEMENTS,
-        OVERRIDES, BELONGS_TO.
+        OVERRIDES, BELONGS_TO, REBINDS.
 """
 
 from __future__ import annotations
@@ -220,6 +220,35 @@ _REL_TABLES: list[str] = [
     """CREATE REL TABLE IF NOT EXISTS BELONGS_TO(
         FROM File TO Module,
         FROM File TO Package
+    )""",
+    # BUC-1611: module-level method rebinding (monkey-patching).
+    # When a module's top-level scope does ``Widget.render = custom``, we
+    # emit a REBINDS edge from the *rebinding module* to the *original*
+    # callable that was overwritten.  The replacement target is carried
+    # as a string property (``new_target``) rather than a second endpoint
+    # because LadybugDB rel-table FROM/TO pairs have to be declared up
+    # front; storing the qname as a STRING lets the resolver look it up
+    # in the function_registry at call-resolution time.
+    #
+    # Endpoint pairs:
+    #   • FROM Module — every rebinding lives at module scope.
+    #   • TO Method   — the common case (``Class.method = ...``).
+    #   • TO Function — for symmetry when the original callable was
+    #     classified as a Function (graph_updater treats module-scope
+    #     ``def`` as Function; we keep both endpoints so the resolver
+    #     can emit either without scheme acrobatics).
+    #
+    # Ordering note: "latest wins" within a single module is a *resolver*
+    # decision (last assignment encountered in source order — see
+    # ``rebind_processor.RebindRegistry``).  Inter-module ordering uses
+    # last-module-encountered semantics; the schema does not encode
+    # ordering — the resolver does.
+    """CREATE REL TABLE IF NOT EXISTS REBINDS(
+        FROM Module TO Method,
+        FROM Module TO Function,
+        new_target STRING DEFAULT '',
+        file_path STRING DEFAULT '',
+        line_start INT64 DEFAULT 0
     )""",
 ]
 

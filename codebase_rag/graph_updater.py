@@ -441,6 +441,13 @@ class GraphUpdater:
         self._process_files(force=force)
 
         logger.info(ls.FOUND_FUNCTIONS, count=len(self.function_registry))
+
+        # BUC-1611: discover module-level method rebindings (Python
+        # monkey-patching) BEFORE call resolution, so the call resolver
+        # can swap rebound qnames in-flight.  Edge emission happens at
+        # the end of this pass — independent of CALLS resolution.
+        self._discover_method_rebindings()
+
         logger.info(ls.PASS_3_CALLS)
         self._process_function_calls()
 
@@ -714,6 +721,26 @@ class GraphUpdater:
             self.factory.call_processor.process_calls_in_file(
                 file_path, root_node, language, self.queries
             )
+
+    def _discover_method_rebindings(self) -> None:
+        """BUC-1611: scan every Python AST for module-level monkey-patches.
+
+        Populates ``ProcessorFactory.rebind_processor.registry`` so the
+        call resolver can consult it during the subsequent CALLS pass,
+        then emits one REBINDS edge per rebinding to the ingestor.
+
+        Non-Python ASTs are skipped (the processor itself is a no-op for
+        them, but we short-circuit here to avoid unnecessary iteration).
+        Cross-module ordering is the AST cache's iteration order — which
+        matches the file-discovery order recorded in pass 2.
+        """
+        rebind_processor = self.factory.rebind_processor
+        for file_path, (root_node, language) in self.ast_cache.items():
+            if language != cs.SupportedLanguage.PYTHON:
+                continue
+            rebind_processor.process_file(file_path, root_node, language)
+
+        rebind_processor.emit_rebind_edges()
 
     def _generate_semantic_embeddings(self) -> None:
         if self.skip_embeddings:

@@ -13,6 +13,7 @@ from ..types_defs import FunctionRegistryTrieProtocol, LanguageQueries
 from .call_resolver import CallResolver
 from .cpp import utils as cpp_utils
 from .import_processor import ImportProcessor
+from .rebind_processor import RebindRegistry
 from .type_inference import TypeInferenceEngine
 from .utils import get_function_captures, is_method_node
 
@@ -29,6 +30,7 @@ class CallProcessor:
         import_processor: ImportProcessor,
         type_inference: TypeInferenceEngine,
         class_inheritance: dict[str, list[str]],
+        rebind_registry: RebindRegistry | None = None,
     ) -> None:
         self.ingestor = ingestor
         self.repo_path = repo_path
@@ -39,6 +41,11 @@ class CallProcessor:
             import_processor=import_processor,
             type_inference=type_inference,
             class_inheritance=class_inheritance,
+            # BUC-1611: pass the rebind registry through so the resolver
+            # can swap method qnames at call-resolution time.  Defaults
+            # to ``None`` to keep callers unaware of the rebind subsystem
+            # if they don't need it (tests, legacy code paths).
+            rebind_registry=rebind_registry,
         )
 
     def _get_node_name(self, node: Node, field: str = cs.FIELD_NAME) -> str | None:
@@ -355,6 +362,20 @@ class CallProcessor:
 
             callee_type = tagged_callee.callee_type
             callee_qn = tagged_callee.callee_qn
+
+            # BUC-1611: after the normal resolver has picked a callee,
+            # consult the rebind registry for any module-level monkey-patch
+            # targeting this qname.  When a rebind exists, the callee is
+            # swapped to the replacement target and ``rebind_resolved_via``
+            # is set to ``'rebound'`` (BUC-1609 reserved value), which
+            # overrides the resolver's own resolved_via tag below.
+            # ``apply_rebind`` is a safe no-op (returns None for the
+            # resolved_via slot) when the resolver was constructed without
+            # a rebind_registry or when no rebind targets this qname.
+            callee_type, callee_qn, rebind_resolved_via = (
+                self._resolver.apply_rebind(callee_type, callee_qn)
+            )
+
             logger.debug(
                 ls.CALL_FOUND,
                 caller=caller_qn,
@@ -375,6 +396,16 @@ class CallProcessor:
             line_start = (start_point[0] + 1) if start_point else 0
             col_start = start_point[1] if start_point else 0
 
+            # BUC-1609 + BUC-1611: resolver provenance with rebind override.
+            # Rebound calls inherit the resolver's confidence number (the
+            # rebind didn't make the call site any less certain about WHICH
+            # qname it picked — that signal still comes from the resolver).
+            resolved_via = (
+                rebind_resolved_via
+                if rebind_resolved_via is not None
+                else tagged_callee.resolved_via
+            )
+
             self.ingestor.ensure_relationship_batch(
                 (caller_type, cs.KEY_QUALIFIED_NAME, caller_qn),
                 cs.RelationshipType.CALLS,
@@ -383,8 +414,7 @@ class CallProcessor:
                     "file_path": call_site_file_path,
                     "line_start": line_start,
                     "col_start": col_start,
-                    # BUC-1609: resolver provenance.
-                    "resolved_via": tagged_callee.resolved_via,
+                    "resolved_via": resolved_via,
                     "confidence": tagged_callee.confidence,
                 },
             )

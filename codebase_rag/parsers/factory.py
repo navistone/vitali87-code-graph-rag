@@ -11,6 +11,7 @@ from ..types_defs import (
 from .call_processor import CallProcessor
 from .definition_processor import DefinitionProcessor
 from .import_processor import ImportProcessor
+from .rebind_processor import RebindProcessor
 from .structure_processor import StructureProcessor
 from .type_inference import TypeInferenceEngine
 
@@ -32,6 +33,7 @@ class ProcessorFactory:
         "_definition_processor",
         "_type_inference",
         "_call_processor",
+        "_rebind_processor",
     )
 
     def __init__(
@@ -63,6 +65,7 @@ class ProcessorFactory:
         self._definition_processor: DefinitionProcessor | None = None
         self._type_inference: TypeInferenceEngine | None = None
         self._call_processor: CallProcessor | None = None
+        self._rebind_processor: RebindProcessor | None = None
 
     @property
     def import_processor(self) -> ImportProcessor:
@@ -129,5 +132,28 @@ class ProcessorFactory:
                 import_processor=self.import_processor,
                 type_inference=self.type_inference,
                 class_inheritance=self.definition_processor.class_inheritance,
+                # BUC-1611: feed the shared rebind registry into the call
+                # resolver so module-level monkey-patches reroute CALLS
+                # edges to the replacement target.
+                rebind_registry=self.rebind_processor.registry,
             )
         return self._call_processor
+
+    @property
+    def rebind_processor(self) -> RebindProcessor:
+        """BUC-1611: discovers module-level method rebindings (Python only for v1).
+
+        Created lazily so it can share the already-populated import_processor
+        and function_registry.  Caller must invoke ``process_file`` on every
+        Python AST after definitions have been ingested, then
+        ``emit_rebind_edges`` once at the end of the run.
+        """
+        if self._rebind_processor is None:
+            self._rebind_processor = RebindProcessor(
+                ingestor=self.ingestor,
+                repo_path=self.repo_path,
+                project_name=self.project_name,
+                function_registry=self.function_registry,
+                import_processor=self.import_processor,
+            )
+        return self._rebind_processor
