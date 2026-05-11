@@ -20,6 +20,7 @@ Schema layout:
         DEFINES, DEFINES_METHOD, CALLS, IMPORTS, INHERITS, IMPLEMENTS,
         OVERRIDES, BELONGS_TO.
 """
+
 from __future__ import annotations
 
 import real_ladybug as lb
@@ -161,14 +162,35 @@ _REL_TABLES: list[str] = [
     """CREATE REL TABLE IF NOT EXISTS DEFINES_METHOD(
         FROM Class TO Method
     )""",
-    # BUC-1603: CALLS edges carry call-site provenance (file + line + column)
-    # so downstream consumers (blast-radius, agent context bundles) can show
-    # "this call happens at <file>:<line>" without re-parsing source.  The
-    # three columns are nullable from the reader's POV — when a row was
-    # written before this migration ran it surfaces as the empty string /
-    # zero (see ``_REL_ALTERS`` below for the backfill defaults).  Future
-    # work (BUC-1603-followup): add ``line_end`` / ``col_end`` for full
-    # range coverage; intentionally punted to keep this change minimal.
+    # BUC-1603 + BUC-1609: CALLS edges carry call-site provenance (file +
+    # line + column from BUC-1603) and resolver provenance (resolved_via +
+    # confidence from BUC-1609) so downstream consumers (blast-radius,
+    # agent context bundles, mergeAndRank) can show "this call happens at
+    # <file>:<line>" without re-parsing source AND can deprioritize
+    # low-confidence bindings (e.g. trie-suffix fallbacks, import-star
+    # wildcards) when ranking results.  The columns are nullable from
+    # the reader's POV — when a row was written before this migration ran
+    # it surfaces as the schema DEFAULT (see ``_REL_ALTERS`` below for the
+    # backfill defaults).
+    #
+    # ``resolved_via`` taxonomy (see ``call_resolver`` for the canonical
+    # constants):
+    #   - ``'exact'``     — fully-resolved qname (direct import, same-module,
+    #                       type-bound method, super, builtin, IIFE)
+    #   - ``'heuristic'`` — name matched within scope but ambiguity existed
+    #                       (trie-suffix fallback picked best candidate)
+    #   - ``'wildcard'``  — resolved through ``from foo import *``
+    #   - ``'fallback'``  — couldn't resolve, edge written against best-effort
+    #                       External node
+    #   - ``'rebound'``   — RESERVED for BUC-1611 (method rebinding); never
+    #                       emitted yet
+    #   - ``'scip'``      — RESERVED for BUC-1615 (scip-typescript); never
+    #                       emitted yet
+    #   - ``'unknown'``   — DEFAULT for pre-BUC-1609 rows
+    #
+    # ``confidence`` is a DOUBLE in [0.0, 1.0].  Suggested mapping per
+    # resolved_via: exact=1.0, heuristic=0.6, wildcard=0.5, fallback=0.2,
+    # unknown=1.0 (don't penalize pre-existing edges; backfill default).
     """CREATE REL TABLE IF NOT EXISTS CALLS(
         FROM Function TO Function,
         FROM Function TO Method,
@@ -178,7 +200,9 @@ _REL_TABLES: list[str] = [
         FROM Module TO Method,
         file_path STRING DEFAULT '',
         line_start INT64 DEFAULT 0,
-        col_start INT64 DEFAULT 0
+        col_start INT64 DEFAULT 0,
+        resolved_via STRING DEFAULT 'unknown',
+        confidence DOUBLE DEFAULT 1.0
     )""",
     """CREATE REL TABLE IF NOT EXISTS IMPORTS(
         FROM Module TO Module,
@@ -200,9 +224,10 @@ _REL_TABLES: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Backfill ALTERs for existing databases (BUC-1603)
+# Backfill ALTERs for existing databases (BUC-1603 + BUC-1609)
 # ---------------------------------------------------------------------------
-# Existing CALLS rows written before BUC-1603 lack the provenance columns.
+# Existing CALLS rows written before BUC-1603 / BUC-1609 lack the provenance
+# columns.
 # LadybugDB (Kuzu fork) supports ``ALTER REL TABLE <name> ADD <col> <type>``
 # but, unlike ``CREATE``, it has no ``IF NOT EXISTS`` guard.  We run these
 # in a try/except and treat "already exists" / "duplicate column" errors as
@@ -221,6 +246,14 @@ _REL_ALTERS: list[str] = [
     "ALTER TABLE CALLS ADD file_path STRING DEFAULT ''",
     "ALTER TABLE CALLS ADD line_start INT64 DEFAULT 0",
     "ALTER TABLE CALLS ADD col_start INT64 DEFAULT 0",
+    # BUC-1609: resolver provenance — pre-existing rows surface as
+    # ('unknown', 1.0).  The DEFAULT of 1.0 (not 0.0) is intentional: a
+    # downstream ``min_confidence`` filter that gates on >= 0.5 should not
+    # accidentally drop legacy edges just because they were ingested before
+    # the resolver-tagging code shipped.  Once the consumer is re-indexed
+    # the column converges on the resolver-supplied values.
+    "ALTER TABLE CALLS ADD resolved_via STRING DEFAULT 'unknown'",
+    "ALTER TABLE CALLS ADD confidence DOUBLE DEFAULT 1.0",
 ]
 
 # Substrings that indicate "the column you tried to add already exists".
