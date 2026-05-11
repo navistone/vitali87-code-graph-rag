@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from typing import NamedTuple
 
 from loguru import logger
 from tree_sitter import Node
@@ -15,6 +16,86 @@ from .type_inference import TypeInferenceEngine
 
 _SEPARATOR_PATTERN = re.compile(r"[.:]|::")
 _CHAINED_METHOD_PATTERN = re.compile(r"\.([^.()]+)$")
+
+
+# ---------------------------------------------------------------------------
+# BUC-1603: resolver-provenance tags
+# ---------------------------------------------------------------------------
+# Every CALLS edge is annotated with two properties so downstream consumers
+# (blast-radius queries, mergeAndRank) can distinguish high-confidence
+# bindings from fuzzy guesses.
+#
+# Tag map (canonical for BUC-1603):
+#   _try_resolve_same_module     -> ("same_module",     "high")
+#   _try_resolve_direct_import   -> ("direct_import",   "high")
+#   _try_resolve_via_type_inference (a.k.a. _try_resolve_via_local_type and
+#       its sibling type-inferred two-part paths) -> ("type_inferred", "medium")
+#   _try_resolve_inherited_method -> ("inherited",       "high")
+#   _resolve_super_call          -> ("super",           "high")
+#   _try_resolve_via_trie        -> ("trie_fallback",   "low")
+#
+# Additional paths covered for completeness (no audit guidance, conservative
+# defaults that downstream consumers can override if needed):
+#   resolve_builtin_call         -> ("builtin",         "high")
+#   resolve_cpp_operator_call    -> ("cpp_operator",    "high")
+#   resolve_java_method_call     -> ("java_resolver",   "high")
+#   _try_resolve_wildcard_imports -> ("wildcard_import","medium")
+#   _resolve_chained_call        -> ("chained_method",  "medium")
+#   _try_resolve_iife            -> ("iife",            "high")
+#
+# Pre-BUC-1603 rows in already-indexed DBs surface as ("unknown", "unknown")
+# via the schema-level DEFAULT — downstream consumers should treat unknown
+# as "don't filter on this row".
+
+RESOLVED_VIA_SAME_MODULE = "same_module"
+RESOLVED_VIA_DIRECT_IMPORT = "direct_import"
+RESOLVED_VIA_TYPE_INFERRED = "type_inferred"
+RESOLVED_VIA_INHERITED = "inherited"
+RESOLVED_VIA_SUPER = "super"
+RESOLVED_VIA_TRIE_FALLBACK = "trie_fallback"
+RESOLVED_VIA_BUILTIN = "builtin"
+RESOLVED_VIA_CPP_OPERATOR = "cpp_operator"
+RESOLVED_VIA_JAVA_RESOLVER = "java_resolver"
+RESOLVED_VIA_WILDCARD_IMPORT = "wildcard_import"
+RESOLVED_VIA_CHAINED_METHOD = "chained_method"
+RESOLVED_VIA_IIFE = "iife"
+RESOLVED_VIA_UNKNOWN = "unknown"
+
+CONFIDENCE_HIGH = "high"
+CONFIDENCE_MEDIUM = "medium"
+CONFIDENCE_LOW = "low"
+CONFIDENCE_UNKNOWN = "unknown"
+
+
+class ResolveResult(NamedTuple):
+    """A tagged resolver outcome.
+
+    Backward-compat note: the underlying ``(callee_type, callee_qn)`` tuple
+    is preserved as the first two fields, so callers that only need the
+    legacy shape can keep destructuring ``(callee_type, callee_qn) = result``.
+    """
+
+    callee_type: str
+    callee_qn: str
+    resolved_via: str
+    confidence: str
+
+    @classmethod
+    def from_tuple(
+        cls,
+        result: tuple[str, str] | None,
+        resolved_via: str,
+        confidence: str,
+    ) -> "ResolveResult | None":
+        """Wrap a legacy ``(type, qn)`` tuple with provenance.
+
+        Returns ``None`` if ``result`` is ``None`` so callers can use the
+        usual walrus / short-circuit patterns.
+        """
+        if result is None:
+            return None
+        callee_type, callee_qn = result
+        return cls(callee_type, callee_qn, resolved_via, confidence)
 
 
 class CallResolver:
@@ -79,6 +160,191 @@ class CallResolver:
             return result
 
         return self._try_resolve_via_trie(call_name, module_qn)
+
+    def resolve_function_call_with_provenance(
+        self,
+        call_name: str,
+        module_qn: str,
+        local_var_types: dict[str, str] | None = None,
+        class_context: str | None = None,
+    ) -> ResolveResult | None:
+        """BUC-1603: same dispatch as ``resolve_function_call`` but tags
+        every successful resolution with ``resolved_via`` + ``confidence``.
+
+        Resolver branches are evaluated in the same order as the untagged
+        variant — we only wrap the returned ``(type, qn)`` tuple at each
+        branch with the canonical tag for that resolver path.
+
+        The ``_via_imports`` path is internally heterogeneous (direct,
+        qualified, wildcard) so the wrapping happens inside that helper's
+        tagged variant rather than at the dispatcher level.
+        """
+        if result := self._try_resolve_iife(call_name, module_qn):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_IIFE, CONFIDENCE_HIGH
+            )
+
+        if self._is_super_call(call_name):
+            # _resolve_super_call internally uses _resolve_inherited_method,
+            # but the caller intent here is "super" so we tag it as such.
+            return ResolveResult.from_tuple(
+                self._resolve_super_call(call_name, class_context),
+                RESOLVED_VIA_SUPER,
+                CONFIDENCE_HIGH,
+            )
+
+        if cs.SEPARATOR_DOT in call_name and self._is_method_chain(call_name):
+            return ResolveResult.from_tuple(
+                self._resolve_chained_call(call_name, module_qn, local_var_types),
+                RESOLVED_VIA_CHAINED_METHOD,
+                CONFIDENCE_MEDIUM,
+            )
+
+        if tagged := self._try_resolve_via_imports_tagged(
+            call_name, module_qn, local_var_types
+        ):
+            return tagged
+
+        if result := self._try_resolve_same_module(call_name, module_qn):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_SAME_MODULE, CONFIDENCE_HIGH
+            )
+
+        return ResolveResult.from_tuple(
+            self._try_resolve_via_trie(call_name, module_qn),
+            RESOLVED_VIA_TRIE_FALLBACK,
+            CONFIDENCE_LOW,
+        )
+
+    def _try_resolve_via_imports_tagged(
+        self,
+        call_name: str,
+        module_qn: str,
+        local_var_types: dict[str, str] | None,
+    ) -> ResolveResult | None:
+        """Tagged sibling of ``_try_resolve_via_imports``.
+
+        Splits the three resolver paths that the untagged variant collapses
+        into one return value: direct import (high), qualified call (mixed —
+        type-inferred or import-static; inherited when the binding walked
+        through ``_resolve_inherited_method``), and wildcard import (medium).
+        """
+        if module_qn not in self.import_processor.import_mapping:
+            return None
+
+        import_map = self.import_processor.import_mapping[module_qn]
+
+        if result := self._try_resolve_direct_import(call_name, import_map):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_DIRECT_IMPORT, CONFIDENCE_HIGH
+            )
+
+        if result := self._try_resolve_qualified_call(
+            call_name, import_map, module_qn, local_var_types
+        ):
+            # Qualified calls resolve via type inference + import binding,
+            # but the underlying binding can itself be either direct
+            # (method exists on the inferred class) or inherited (method
+            # was found via class_inheritance walk).  Distinguish here so
+            # downstream consumers can see ``inherited`` separately from
+            # plain ``type_inferred``.
+            callee_type, callee_qn = result
+            if self._was_resolved_via_inheritance(
+                callee_qn, call_name, local_var_types, import_map, module_qn
+            ):
+                return ResolveResult(
+                    callee_type,
+                    callee_qn,
+                    RESOLVED_VIA_INHERITED,
+                    CONFIDENCE_HIGH,
+                )
+            return ResolveResult(
+                callee_type, callee_qn, RESOLVED_VIA_TYPE_INFERRED, CONFIDENCE_MEDIUM
+            )
+
+        return ResolveResult.from_tuple(
+            self._try_resolve_wildcard_imports(call_name, import_map),
+            RESOLVED_VIA_WILDCARD_IMPORT,
+            CONFIDENCE_MEDIUM,
+        )
+
+    def _was_resolved_via_inheritance(
+        self,
+        resolved_qn: str,
+        call_name: str,
+        local_var_types: dict[str, str] | None,
+        import_map: dict[str, str],
+        module_qn: str,
+    ) -> bool:
+        """Detect whether a qualified-call resolution came through a parent
+        class via ``_resolve_inherited_method`` rather than a direct hit on
+        the inferred class.
+
+        Heuristic: re-derive the class the qualified call would have bound
+        against directly (from the object's local type or import), build
+        the would-be direct method_qn, and compare against ``resolved_qn``.
+        If they differ, the method was found through inheritance.
+        """
+        if not self._has_separator(call_name):
+            return False
+        separator = self._get_separator(call_name)
+        parts = call_name.split(separator)
+        if len(parts) < 2:
+            return False
+
+        object_name = parts[0]
+        method_name = parts[-1] if len(parts) == 2 else cs.SEPARATOR_DOT.join(parts[1:])
+
+        direct_class_qn: str | None = None
+        if local_var_types and object_name in local_var_types:
+            var_type = local_var_types[object_name]
+            direct_class_qn = (
+                self._resolve_class_qn_from_type(var_type, import_map, module_qn)
+                or None
+            )
+        elif object_name in import_map:
+            direct_class_qn = self._resolve_imported_class_qn(
+                import_map[object_name], object_name, method_name, separator
+            )
+
+        if not direct_class_qn:
+            return False
+
+        registry_separator = (
+            separator if separator == cs.SEPARATOR_COLON else cs.SEPARATOR_DOT
+        )
+        would_be_direct = f"{direct_class_qn}{registry_separator}{method_name}"
+        return resolved_qn != would_be_direct
+
+    def resolve_builtin_call_with_provenance(
+        self, call_name: str
+    ) -> ResolveResult | None:
+        return ResolveResult.from_tuple(
+            self.resolve_builtin_call(call_name),
+            RESOLVED_VIA_BUILTIN,
+            CONFIDENCE_HIGH,
+        )
+
+    def resolve_cpp_operator_call_with_provenance(
+        self, call_name: str, module_qn: str
+    ) -> ResolveResult | None:
+        return ResolveResult.from_tuple(
+            self.resolve_cpp_operator_call(call_name, module_qn),
+            RESOLVED_VIA_CPP_OPERATOR,
+            CONFIDENCE_HIGH,
+        )
+
+    def resolve_java_method_call_with_provenance(
+        self,
+        call_node: Node,
+        module_qn: str,
+        local_var_types: dict[str, str],
+    ) -> ResolveResult | None:
+        return ResolveResult.from_tuple(
+            self.resolve_java_method_call(call_node, module_qn, local_var_types),
+            RESOLVED_VIA_JAVA_RESOLVER,
+            CONFIDENCE_HIGH,
+        )
 
     def _try_resolve_iife(
         self, call_name: str, module_qn: str

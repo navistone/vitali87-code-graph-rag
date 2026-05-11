@@ -292,27 +292,39 @@ class CallProcessor:
             if not call_name:
                 continue
 
+            # BUC-1603: every resolver entry point has a "_with_provenance"
+            # sibling that carries the resolver-path tag + confidence on
+            # the returned ``ResolveResult``.  Falling back through each
+            # entry point preserves the existing dispatch order; tags get
+            # attached at the first one that returns non-None.
             if (
                 language == cs.SupportedLanguage.JAVA
                 and call_node.type == cs.TS_METHOD_INVOCATION
             ):
-                callee_info = self._resolver.resolve_java_method_call(
+                tagged_callee = self._resolver.resolve_java_method_call_with_provenance(
                     call_node, module_qn, local_var_types
                 )
             else:
-                callee_info = self._resolver.resolve_function_call(
-                    call_name, module_qn, local_var_types, class_context
+                tagged_callee = (
+                    self._resolver.resolve_function_call_with_provenance(
+                        call_name, module_qn, local_var_types, class_context
+                    )
                 )
-            if callee_info:
-                callee_type, callee_qn = callee_info
-            elif builtin_info := self._resolver.resolve_builtin_call(call_name):
-                callee_type, callee_qn = builtin_info
-            elif operator_info := self._resolver.resolve_cpp_operator_call(
-                call_name, module_qn
-            ):
-                callee_type, callee_qn = operator_info
-            else:
+            if tagged_callee is None:
+                tagged_callee = self._resolver.resolve_builtin_call_with_provenance(
+                    call_name
+                )
+            if tagged_callee is None:
+                tagged_callee = (
+                    self._resolver.resolve_cpp_operator_call_with_provenance(
+                        call_name, module_qn
+                    )
+                )
+            if tagged_callee is None:
                 continue
+
+            callee_type = tagged_callee.callee_type
+            callee_qn = tagged_callee.callee_qn
             logger.debug(
                 ls.CALL_FOUND,
                 caller=caller_qn,
@@ -325,6 +337,10 @@ class CallProcessor:
                 (caller_type, cs.KEY_QUALIFIED_NAME, caller_qn),
                 cs.RelationshipType.CALLS,
                 (callee_type, cs.KEY_QUALIFIED_NAME, callee_qn),
+                properties={
+                    "resolved_via": tagged_callee.resolved_via,
+                    "confidence": tagged_callee.confidence,
+                },
             )
 
     def _build_nested_qualified_name(

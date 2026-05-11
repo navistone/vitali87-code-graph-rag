@@ -161,13 +161,22 @@ _REL_TABLES: list[str] = [
     """CREATE REL TABLE IF NOT EXISTS DEFINES_METHOD(
         FROM Class TO Method
     )""",
+    # BUC-1603: CALLS edges carry resolver provenance so downstream consumers
+    # (blast-radius, mergeAndRank) can deprioritize low-confidence bindings
+    # like the trie fallback. ``resolved_via`` is the resolver-path tag
+    # (e.g. "direct_import", "same_module", "trie_fallback") and
+    # ``confidence`` is one of {"high", "medium", "low", "unknown"}.
+    # Pre-existing rows (rows written before this migration ran) carry the
+    # DEFAULT 'unknown' on both columns — see ``_REL_ALTERS`` below.
     """CREATE REL TABLE IF NOT EXISTS CALLS(
         FROM Function TO Function,
         FROM Function TO Method,
         FROM Method TO Function,
         FROM Method TO Method,
         FROM Module TO Function,
-        FROM Module TO Method
+        FROM Module TO Method,
+        resolved_via STRING DEFAULT 'unknown',
+        confidence STRING DEFAULT 'unknown'
     )""",
     """CREATE REL TABLE IF NOT EXISTS IMPORTS(
         FROM Module TO Module,
@@ -187,6 +196,33 @@ _REL_TABLES: list[str] = [
         FROM File TO Package
     )""",
 ]
+
+# ---------------------------------------------------------------------------
+# Backfill ALTERs for existing databases
+# ---------------------------------------------------------------------------
+# LadybugDB (Kuzu fork) supports `ALTER REL TABLE <name> ADD <col> <type>`
+# but, unlike `CREATE`, it has no `IF NOT EXISTS` guard.  We run these in a
+# try/except block and treat "already exists" / "duplicate column" errors as
+# success.  Each ALTER below is the migration counterpart for a column that
+# was added in-place after the initial CALLS DDL shipped — for fresh DBs the
+# columns are already present (declared inline in ``_REL_TABLES``) so the
+# ALTER is a no-op; for already-indexed DBs (BUC-1603 deployed onto an
+# existing graph) the ALTER backfills the missing columns with DEFAULT
+# 'unknown', preserving every CALLS row.
+_REL_ALTERS: list[str] = [
+    "ALTER TABLE CALLS ADD resolved_via STRING DEFAULT 'unknown'",
+    "ALTER TABLE CALLS ADD confidence STRING DEFAULT 'unknown'",
+]
+
+# Substrings that indicate "the column you tried to add already exists" —
+# LadybugDB's error messages vary across versions, so we match on common
+# fragments rather than an exact string.
+_ALTER_IDEMPOTENT_SUBSTRINGS: tuple[str, ...] = (
+    "already exists",
+    "duplicate",
+    "already has property",
+)
+
 
 def migrate(db_path: str) -> None:
     """Run schema migration on the given LadybugDB database path.
@@ -215,5 +251,22 @@ def migrate(db_path: str) -> None:
         table_name = ddl.split("TABLE IF NOT EXISTS")[1].split("(")[0].strip()
         conn.execute(ddl)
         logger.debug(f"  Rel table: {table_name}")
+
+    # BUC-1603: backfill resolved_via + confidence on CALLS for DBs that
+    # were created before this migration ran. Each ALTER is independent —
+    # a failure on one column should not prevent the next from being tried.
+    for alter_ddl in _REL_ALTERS:
+        try:
+            conn.execute(alter_ddl)
+            logger.debug(f"  Applied ALTER: {alter_ddl}")
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(s in err_str for s in _ALTER_IDEMPOTENT_SUBSTRINGS):
+                logger.debug(f"  ALTER skipped (column already present): {alter_ddl}")
+            else:
+                # Hard fail: we can't silently swallow a schema migration
+                # error that isn't the idempotent already-exists case.
+                logger.error(f"  ALTER failed: {alter_ddl}: {e}")
+                raise
 
     logger.info("LadybugDB schema migration complete ✓")
