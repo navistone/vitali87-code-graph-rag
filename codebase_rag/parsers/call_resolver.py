@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from typing import NamedTuple
 
 from loguru import logger
 from tree_sitter import Node
@@ -15,6 +16,103 @@ from .type_inference import TypeInferenceEngine
 
 _SEPARATOR_PATTERN = re.compile(r"[.:]|::")
 _CHAINED_METHOD_PATTERN = re.compile(r"\.([^.()]+)$")
+
+
+# ---------------------------------------------------------------------------
+# BUC-1609: CALLS resolver provenance — taxonomy + confidence
+# ---------------------------------------------------------------------------
+# Every CALLS edge is annotated with two properties so downstream consumers
+# (blast-radius queries, mergeAndRank, code-indexer-service's planned
+# ``min_confidence`` filter) can distinguish high-confidence bindings from
+# fuzzy guesses.
+#
+# ``resolved_via`` is a small enum of *how* the resolver landed on the
+# callee qname; ``confidence`` is a float in [0.0, 1.0] suitable for
+# multiplicative score boosts/penalties.  The constants below are the
+# canonical values — code outside this module should compare against them
+# rather than typing the strings directly so a future renaming is a single
+# search-replace.
+#
+# Reserved values that no current resolver emits:
+#   - ``RESOLVED_VIA_REBOUND`` — BUC-1611 (method rebinding)
+#   - ``RESOLVED_VIA_SCIP``    — BUC-1615 (scip-typescript)
+# Both are exported so downstream consumers can include them in their
+# match arms without redefining the strings; they are guarded by
+# ``_EMITTABLE_RESOLVED_VIA`` so the resolver itself never accidentally
+# emits them before the sibling tickets land.
+RESOLVED_VIA_EXACT = "exact"
+RESOLVED_VIA_HEURISTIC = "heuristic"
+RESOLVED_VIA_WILDCARD = "wildcard"
+RESOLVED_VIA_FALLBACK = "fallback"
+RESOLVED_VIA_REBOUND = "rebound"  # reserved — BUC-1611
+RESOLVED_VIA_SCIP = "scip"  # reserved — BUC-1615
+RESOLVED_VIA_UNKNOWN = "unknown"  # schema DEFAULT for pre-BUC-1609 rows
+
+# Confidence mapping per the ticket.  ``unknown`` is intentionally 1.0 —
+# pre-existing edges should not be penalized by a downstream
+# ``min_confidence`` filter just because they were ingested before this
+# migration ran.
+CONFIDENCE_EXACT = 1.0
+CONFIDENCE_HEURISTIC = 0.6
+CONFIDENCE_WILDCARD = 0.5
+CONFIDENCE_FALLBACK = 0.2
+CONFIDENCE_UNKNOWN = 1.0
+
+# Values this module is allowed to emit on new edges.  ``rebound`` and
+# ``scip`` are reserved for sibling tickets — listing them here as
+# *emittable* would let BUC-1609 leak forbidden values, which the guard
+# below catches at runtime.
+_EMITTABLE_RESOLVED_VIA: frozenset[str] = frozenset(
+    {
+        RESOLVED_VIA_EXACT,
+        RESOLVED_VIA_HEURISTIC,
+        RESOLVED_VIA_WILDCARD,
+        RESOLVED_VIA_FALLBACK,
+        RESOLVED_VIA_UNKNOWN,
+    }
+)
+
+
+def _assert_emittable_resolved_via(tag: str) -> None:
+    """Defensive guard — BUC-1609 must not emit reserved values."""
+    if tag not in _EMITTABLE_RESOLVED_VIA:
+        raise ValueError(
+            f"resolved_via {tag!r} is reserved for a sibling ticket "
+            f"(BUC-1611 'rebound' / BUC-1615 'scip') and must not be "
+            f"emitted by the BUC-1609 resolver"
+        )
+
+
+class ResolveResult(NamedTuple):
+    """A tagged resolver outcome.
+
+    ``callee_type`` and ``callee_qn`` mirror the legacy ``tuple[str, str]``
+    shape, so any caller that destructures the first two fields keeps
+    working.  ``resolved_via`` + ``confidence`` carry BUC-1609 provenance.
+    """
+
+    callee_type: str
+    callee_qn: str
+    resolved_via: str
+    confidence: float
+
+    @classmethod
+    def from_tuple(
+        cls,
+        result: tuple[str, str] | None,
+        resolved_via: str,
+        confidence: float,
+    ) -> ResolveResult | None:
+        """Wrap a legacy ``(type, qn)`` tuple with provenance.
+
+        Returns ``None`` when ``result`` is ``None`` so callers can use the
+        usual walrus / short-circuit patterns.
+        """
+        if result is None:
+            return None
+        _assert_emittable_resolved_via(resolved_via)
+        callee_type, callee_qn = result
+        return cls(callee_type, callee_qn, resolved_via, confidence)
 
 
 class CallResolver:
@@ -79,6 +177,163 @@ class CallResolver:
             return result
 
         return self._try_resolve_via_trie(call_name, module_qn)
+
+    # ------------------------------------------------------------------
+    # BUC-1609: provenance-tagged resolver entry points
+    # ------------------------------------------------------------------
+    # ``resolve_function_call_with_provenance`` mirrors the dispatch order
+    # of ``resolve_function_call`` exactly — every branch returns a
+    # ``ResolveResult`` carrying the canonical ``resolved_via`` +
+    # ``confidence`` tag for that resolver path.  Keeping the dispatch
+    # logic duplicated (rather than wrapping the legacy method) is
+    # deliberate: the tag depends on *which branch fired*, which is
+    # information that can only be observed at the dispatcher.  Wrapping
+    # the legacy method would force a per-branch detection heuristic
+    # downstream, which is exactly what we are trying to avoid.
+    #
+    # Branch → tag mapping (matches the schema-level taxonomy):
+    #   _try_resolve_iife            → ("exact",     1.0)
+    #   _resolve_super_call          → ("exact",     1.0)
+    #   _resolve_chained_call        → ("heuristic", 0.6)
+    #   _try_resolve_direct_import   → ("exact",     1.0)
+    #   _try_resolve_qualified_call  → ("exact",     1.0)
+    #   _try_resolve_wildcard_imports→ ("wildcard",  0.5)
+    #   _try_resolve_same_module     → ("exact",     1.0)
+    #   _try_resolve_via_trie        → ("heuristic", 0.6)  if single match
+    #                                  ("heuristic", 0.6)  if multi-match
+    #                                                       (trie sort picks
+    #                                                        nearest-import
+    #                                                        candidate; still
+    #                                                        a fuzzy bind)
+    #   resolve_builtin_call         → ("exact",     1.0)
+    #   resolve_cpp_operator_call    → ("exact",     1.0)
+    #   resolve_java_method_call     → ("exact",     1.0)
+    #
+    # The ``'fallback'`` tag is reserved for resolver paths that bind to a
+    # best-effort External node — the current dispatcher does not have
+    # such a path (the trie fallback always lands on a real node), so
+    # ``'fallback'`` is unused here.  It exists in the taxonomy so a
+    # future "External node best-effort" branch can land it without
+    # another schema migration.
+    def resolve_function_call_with_provenance(
+        self,
+        call_name: str,
+        module_qn: str,
+        local_var_types: dict[str, str] | None = None,
+        class_context: str | None = None,
+    ) -> ResolveResult | None:
+        if result := self._try_resolve_iife(call_name, module_qn):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_EXACT, CONFIDENCE_EXACT
+            )
+
+        if self._is_super_call(call_name):
+            return ResolveResult.from_tuple(
+                self._resolve_super_call(call_name, class_context),
+                RESOLVED_VIA_EXACT,
+                CONFIDENCE_EXACT,
+            )
+
+        if cs.SEPARATOR_DOT in call_name and self._is_method_chain(call_name):
+            # Chained calls (``a.b().c()``) infer types one link at a
+            # time — each hop is a guess.  Tag as heuristic so downstream
+            # filters can deprioritize relative to a direct binding.
+            return ResolveResult.from_tuple(
+                self._resolve_chained_call(call_name, module_qn, local_var_types),
+                RESOLVED_VIA_HEURISTIC,
+                CONFIDENCE_HEURISTIC,
+            )
+
+        if tagged := self._try_resolve_via_imports_tagged(
+            call_name, module_qn, local_var_types
+        ):
+            return tagged
+
+        if result := self._try_resolve_same_module(call_name, module_qn):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_EXACT, CONFIDENCE_EXACT
+            )
+
+        # Trie fallback — the resolver couldn't bind via any strict path
+        # and is falling back to a registry suffix search, picking the
+        # candidate with the smallest import distance.  This is the
+        # textbook "name matched within scope but ambiguity existed"
+        # case from the ticket spec → heuristic / 0.6.
+        return ResolveResult.from_tuple(
+            self._try_resolve_via_trie(call_name, module_qn),
+            RESOLVED_VIA_HEURISTIC,
+            CONFIDENCE_HEURISTIC,
+        )
+
+    def _try_resolve_via_imports_tagged(
+        self,
+        call_name: str,
+        module_qn: str,
+        local_var_types: dict[str, str] | None,
+    ) -> ResolveResult | None:
+        """Tagged sibling of ``_try_resolve_via_imports``.
+
+        Splits the three sub-paths that the untagged variant collapses
+        into one return value:
+          - direct import   → ("exact", 1.0)
+          - qualified call  → ("exact", 1.0)
+          - wildcard import → ("wildcard", 0.5)
+        """
+        if module_qn not in self.import_processor.import_mapping:
+            return None
+
+        import_map = self.import_processor.import_mapping[module_qn]
+
+        if result := self._try_resolve_direct_import(call_name, import_map):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_EXACT, CONFIDENCE_EXACT
+            )
+
+        if result := self._try_resolve_qualified_call(
+            call_name, import_map, module_qn, local_var_types
+        ):
+            return ResolveResult.from_tuple(
+                result, RESOLVED_VIA_EXACT, CONFIDENCE_EXACT
+            )
+
+        # Wildcard fallback — ``from foo import *`` brings in an
+        # unenumerated set of names, so the binding is "could be
+        # anything from foo".  Tag with the wildcard taxonomy value.
+        return ResolveResult.from_tuple(
+            self._try_resolve_wildcard_imports(call_name, import_map),
+            RESOLVED_VIA_WILDCARD,
+            CONFIDENCE_WILDCARD,
+        )
+
+    def resolve_builtin_call_with_provenance(
+        self, call_name: str
+    ) -> ResolveResult | None:
+        return ResolveResult.from_tuple(
+            self.resolve_builtin_call(call_name),
+            RESOLVED_VIA_EXACT,
+            CONFIDENCE_EXACT,
+        )
+
+    def resolve_cpp_operator_call_with_provenance(
+        self, call_name: str, module_qn: str
+    ) -> ResolveResult | None:
+        return ResolveResult.from_tuple(
+            self.resolve_cpp_operator_call(call_name, module_qn),
+            RESOLVED_VIA_EXACT,
+            CONFIDENCE_EXACT,
+        )
+
+    def resolve_java_method_call_with_provenance(
+        self,
+        call_node: Node,
+        module_qn: str,
+        local_var_types: dict[str, str],
+    ) -> ResolveResult | None:
+        return ResolveResult.from_tuple(
+            self.resolve_java_method_call(call_node, module_qn, local_var_types),
+            RESOLVED_VIA_EXACT,
+            CONFIDENCE_EXACT,
+        )
 
     def _try_resolve_iife(
         self, call_name: str, module_qn: str
