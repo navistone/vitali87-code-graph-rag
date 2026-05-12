@@ -179,9 +179,16 @@ class LadybugIngestor:
                 ERR_SUBSTR_ALREADY_EXISTS not in err_str
                 and ERR_SUBSTR_CONSTRAINT not in err_str
             ):
-                logger.error(ls.MG_CYPHER_ERROR.format(error=e))
-                logger.error(ls.MG_CYPHER_QUERY.format(query=query))
-                logger.error(ls.MG_CYPHER_PARAMS.format(params=params))
+                # Log at DEBUG level — the caller decides whether the failure
+                # is operationally significant. Many callers (per-row fallback
+                # in ``flush_relationships``, idempotent CREATE in
+                # ``flush_nodes``) treat a raised exception as a soft-success
+                # and would otherwise produce misleading ERROR-level noise on
+                # an otherwise clean indexing pass.  Real failures bubble up
+                # to a caller-level ``logger.warning`` / ``logger.error``.
+                logger.debug(ls.MG_CYPHER_ERROR.format(error=e))
+                logger.debug(ls.MG_CYPHER_QUERY.format(query=query))
+                logger.debug(ls.MG_CYPHER_PARAMS.format(params=params))
             raise
 
     def _execute_batch(
@@ -202,8 +209,12 @@ class LadybugIngestor:
         except Exception as e:
             err_str = str(e).lower()
             if ERR_SUBSTR_ALREADY_EXISTS not in err_str:
-                logger.error(ls.MG_BATCH_ERROR.format(error=e))
-                logger.error(ls.MG_CYPHER_QUERY.format(query=query))
+                # Log at DEBUG — ``flush_relationships`` catches this and
+                # decides escalation (warning + per-row fallback).  Logging
+                # at ERROR here floods operational logs for every benign
+                # batch failure that the caller already handles.
+                logger.debug(ls.MG_BATCH_ERROR.format(error=e))
+                logger.debug(ls.MG_CYPHER_QUERY.format(query=query))
             raise
 
     # ------------------------------------------------------------------
