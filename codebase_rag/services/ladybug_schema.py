@@ -2,7 +2,10 @@
 
 Declares all node tables and relationship tables that match the
 Code-Graph-RAG schema. Must be run once before any ingestion.
-Safe to call on an existing DB — every DDL uses ``IF NOT EXISTS`` guards.
+Safe to call on an existing DB — every DDL uses ``IF NOT EXISTS`` guards
+and every column added after the initial cut is mirrored by an idempotent
+``ALTER TABLE … ADD`` so that re-indexing an old DB picks up new columns
+without a drop-and-recreate.
 
 Embeddings are stored in per-repo numpy files alongside the DB file
 (see ``vector_store.py``), not in LadybugDB. This avoids the chicken-and-egg
@@ -18,7 +21,15 @@ Schema layout:
     Relationship tables
         CONTAINS_FILE, CONTAINS_FOLDER, CONTAINS_PACKAGE, CONTAINS_MODULE,
         DEFINES, DEFINES_METHOD, CALLS, IMPORTS, INHERITS, IMPLEMENTS,
-        OVERRIDES, BELONGS_TO, REBINDS.
+        OVERRIDES, BELONGS_TO, REBINDS, RE_EXPORTS.
+
+Migration completeness contract (BUC-1621):
+    Every CREATE NODE/REL TABLE statement runs unconditionally on every
+    startup — ``IF NOT EXISTS`` is the safety net.  Every ALTER also runs
+    unconditionally; duplicate-column errors are swallowed.  After all DDL
+    has executed, ``_audit_schema()`` logs the present/absent state of every
+    expected table at INFO level so drift between the declared schema and
+    the on-disk DB is visible in service logs.
 """
 
 from __future__ import annotations
@@ -70,6 +81,13 @@ _NODE_TABLES: list[str] = [
         is_exported BOOL,
         PRIMARY KEY (qualified_name)
     )""",
+    # BUC-1602: Function and Method carry is_async / is_generator flags so
+    # downstream consumers can filter async vs sync call sites without
+    # re-parsing source. Defaulted to FALSE for legacy rows; populated by
+    # ``ingest_method`` (utils.py) and ``ingest_function`` (function_ingest.py).
+    # Without these columns declared, every flush silently fails with
+    # "Cannot find property is_async" — which is exactly the BUC-1621 symptom
+    # for Method nodes on existing DBs.
     """CREATE NODE TABLE IF NOT EXISTS Function(
         qualified_name STRING,
         name STRING,
@@ -79,6 +97,8 @@ _NODE_TABLES: list[str] = [
         docstring STRING,
         source_code STRING,
         is_exported BOOL,
+        is_async BOOL DEFAULT FALSE,
+        is_generator BOOL DEFAULT FALSE,
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Method(
@@ -90,6 +110,8 @@ _NODE_TABLES: list[str] = [
         docstring STRING,
         source_code STRING,
         is_exported BOOL,
+        is_async BOOL DEFAULT FALSE,
+        is_generator BOOL DEFAULT FALSE,
         PRIMARY KEY (qualified_name)
     )""",
     # Interface / Enum mirror Class's shape — C# emits the full property
@@ -250,6 +272,18 @@ _REL_TABLES: list[str] = [
         file_path STRING DEFAULT '',
         line_start INT64 DEFAULT 0
     )""",
+    # BUC-1610: module-to-module re-export topology.  Emitted by
+    # ``import_processor`` when a barrel / package-init forwards symbols from
+    # another module (e.g. TS ``export * from './foo'``, Python
+    # ``__all__ = [...]``).  Symbol-level chaining at lookup time lives in
+    # ``CallResolver._walk_reexport_chain``.  The edge is bare — endpoints
+    # only — because chain traversal is qname-based and doesn't need
+    # per-edge metadata.  Listed AFTER REBINDS so older DBs that already
+    # have everything up to REBINDS pick this up cleanly via
+    # ``CREATE REL TABLE IF NOT EXISTS`` on the next startup.
+    """CREATE REL TABLE IF NOT EXISTS RE_EXPORTS(
+        FROM Module TO Module
+    )""",
 ]
 
 # ---------------------------------------------------------------------------
@@ -285,6 +319,61 @@ _REL_ALTERS: list[str] = [
     "ALTER TABLE CALLS ADD confidence DOUBLE DEFAULT 1.0",
 ]
 
+# BUC-1621: backfill ALTERs for node tables.  CREATE NODE TABLE IF NOT EXISTS
+# is a no-op on an existing table — it will NOT add new columns to a table
+# that was created with an older schema.  When BUC-1602 added is_async /
+# is_generator inline above, fresh DBs were correct but every existing
+# on-disk DB (created before BUC-1602 landed) was left with a Function /
+# Method table missing those columns, so ``ingest_method`` flushes failed
+# silently with "Cannot find property is_async" → 0 Methods landed.
+#
+# Same idempotent-success pattern as ``_REL_ALTERS``: duplicate-column
+# errors are swallowed; anything else is hard-fail.
+_NODE_ALTERS: list[str] = [
+    "ALTER TABLE Function ADD is_async BOOL DEFAULT FALSE",
+    "ALTER TABLE Function ADD is_generator BOOL DEFAULT FALSE",
+    "ALTER TABLE Method ADD is_async BOOL DEFAULT FALSE",
+    "ALTER TABLE Method ADD is_generator BOOL DEFAULT FALSE",
+]
+
+# ---------------------------------------------------------------------------
+# Audit — expected schema surface (BUC-1621)
+# ---------------------------------------------------------------------------
+# Source-of-truth list of table names the ingestor expects to find after
+# ``migrate()``.  Logged at INFO level by ``_audit_schema()`` so drift between
+# declared and on-disk schema is visible in service logs without needing to
+# attach a debugger.  Order matches the DDL order above for log readability.
+_EXPECTED_NODE_TABLES: tuple[str, ...] = (
+    "Project",
+    "Package",
+    "Folder",
+    "File",
+    "Module",
+    "Class",
+    "Function",
+    "Method",
+    "Interface",
+    "Enum",
+    "ExternalPackage",
+)
+
+_EXPECTED_REL_TABLES: tuple[str, ...] = (
+    "CONTAINS_FILE",
+    "CONTAINS_FOLDER",
+    "CONTAINS_PACKAGE",
+    "CONTAINS_MODULE",
+    "DEFINES",
+    "DEFINES_METHOD",
+    "CALLS",
+    "IMPORTS",
+    "INHERITS",
+    "IMPLEMENTS",
+    "OVERRIDES",
+    "BELONGS_TO",
+    "REBINDS",
+    "RE_EXPORTS",
+)
+
 # Substrings that indicate "the column you tried to add already exists".
 # LadybugDB error messages vary across versions, so match common fragments
 # rather than an exact string.
@@ -295,12 +384,137 @@ _ALTER_IDEMPOTENT_SUBSTRINGS: tuple[str, ...] = (
 )
 
 
+def _run_alter(conn: lb.Connection, alter_ddl: str, kind: str) -> None:
+    """Execute a single ALTER, treating duplicate-column errors as success.
+
+    Extracted so node and rel ALTER loops share one code path.  Any error
+    whose message does not match ``_ALTER_IDEMPOTENT_SUBSTRINGS`` is
+    re-raised — schema-migration failures must be loud.
+    """
+    try:
+        conn.execute(alter_ddl)
+        logger.debug(f"  Applied {kind} ALTER: {alter_ddl}")
+    except Exception as e:
+        err_str = str(e).lower()
+        if any(s in err_str for s in _ALTER_IDEMPOTENT_SUBSTRINGS):
+            logger.debug(
+                f"  {kind} ALTER skipped (column already present): {alter_ddl}"
+            )
+        else:
+            logger.error(f"  {kind} ALTER failed: {alter_ddl}: {e}")
+            raise
+
+
+def _table_exists(conn: lb.Connection, table_name: str) -> bool:
+    """Best-effort probe for table presence.
+
+    LadybugDB does not expose ``information_schema``; the cheapest portable
+    probe is ``CALL show_tables() RETURN *`` (Kuzu/Lugawugu compatible).  If
+    that fails (older / forked binaries that don't expose ``show_tables``),
+    we fall back to a no-op MATCH against the label — a non-existent table
+    raises, an existing one returns 0 rows in O(1).
+    """
+    try:
+        result = conn.execute("CALL show_tables() RETURN *")
+        for row in _iter_rows(result):
+            # ``show_tables`` columns vary by version; the table name is
+            # always the second column ("name") in Kuzu/Lugawugu.
+            for cell in row:
+                if isinstance(cell, str) and cell == table_name:
+                    return True
+        return False
+    except Exception:
+        # show_tables unavailable — fall back to probe query.
+        try:
+            conn.execute(f"MATCH (n:{table_name}) RETURN count(n) LIMIT 1")
+            return True
+        except Exception:
+            try:
+                conn.execute(
+                    f"MATCH ()-[r:{table_name}]->() RETURN count(r) LIMIT 1"
+                )
+                return True
+            except Exception:
+                return False
+
+
+def _iter_rows(result: object) -> list[list[object]]:
+    """Adapt LadybugDB result objects to a plain list-of-rows.
+
+    LadybugDB query results expose ``get_next``/``has_next`` (iterator) or
+    ``rows`` (eager) depending on version.  We try both shapes; on a totally
+    unknown shape we return an empty list so the caller falls back to the
+    MATCH-probe branch.
+    """
+    rows: list[list[object]] = []
+    try:
+        if hasattr(result, "has_next") and hasattr(result, "get_next"):
+            while result.has_next():  # type: ignore[attr-defined]
+                rows.append(list(result.get_next()))  # type: ignore[attr-defined]
+            return rows
+    except Exception:
+        rows = []
+    try:
+        eager_rows = getattr(result, "rows", None)
+        if eager_rows is not None:
+            return [list(r) for r in eager_rows]
+    except Exception:
+        pass
+    return rows
+
+
+def _audit_schema(conn: lb.Connection) -> None:
+    """Log the present/absent state of every expected table at INFO.
+
+    BUC-1621: makes schema drift between the declared list and the on-disk
+    DB visible in service logs.  Never raises — an audit failure must not
+    abort the migration; the worst case is an empty audit, which is itself
+    a signal.
+    """
+    try:
+        node_present = [t for t in _EXPECTED_NODE_TABLES if _table_exists(conn, t)]
+        node_missing = [t for t in _EXPECTED_NODE_TABLES if t not in node_present]
+        rel_present = [t for t in _EXPECTED_REL_TABLES if _table_exists(conn, t)]
+        rel_missing = [t for t in _EXPECTED_REL_TABLES if t not in rel_present]
+
+        logger.info(
+            f"LadybugDB schema audit — nodes: {len(node_present)}/"
+            f"{len(_EXPECTED_NODE_TABLES)} present "
+            f"[{', '.join(node_present)}]"
+        )
+        if node_missing:
+            logger.warning(
+                f"LadybugDB schema audit — MISSING node tables: "
+                f"[{', '.join(node_missing)}]"
+            )
+        logger.info(
+            f"LadybugDB schema audit — rels:  {len(rel_present)}/"
+            f"{len(_EXPECTED_REL_TABLES)} present "
+            f"[{', '.join(rel_present)}]"
+        )
+        if rel_missing:
+            logger.warning(
+                f"LadybugDB schema audit — MISSING rel tables: "
+                f"[{', '.join(rel_missing)}]"
+            )
+    except Exception as e:
+        logger.warning(f"LadybugDB schema audit failed (non-fatal): {e}")
+
+
 def migrate(db_path: str) -> None:
     """Run schema migration on the given LadybugDB database path.
 
-    Idempotent — safe to call on an existing database. Node/rel tables use
-    ``IF NOT EXISTS`` guards.  No VECTOR extension is loaded here; embeddings
-    are stored in per-repo numpy files (see ``vector_store.py``).
+    Idempotent — safe to call on an existing database. Every CREATE TABLE
+    uses ``IF NOT EXISTS``; every ALTER swallows duplicate-column errors.
+    The full DDL set runs unconditionally on every startup so newly-added
+    node columns and rel tables land on existing DBs without manual
+    intervention.
+
+    After all DDL has executed, the present/absent state of every expected
+    table is logged at INFO level by ``_audit_schema()``.
+
+    No VECTOR extension is loaded here; embeddings are stored in per-repo
+    numpy files (see ``vector_store.py``).
 
     Args:
         db_path: Filesystem path to the LadybugDB database file. Created if
@@ -310,7 +524,10 @@ def migrate(db_path: str) -> None:
     db = lb.Database(db_path)
     conn = lb.Connection(db)
 
-    # Node DDL first — rel tables below reference these types.
+    # 1. Node DDL — rel tables below reference these types.
+    #    ``CREATE NODE TABLE IF NOT EXISTS`` is a no-op when the table
+    #    already exists; new columns on existing tables are handled by the
+    #    ALTER pass below (step 3).
     for ddl in _NODE_TABLES:
         # Extract the table name from the DDL for logging only — LadybugDB
         # does not echo the created object name back to the caller.
@@ -318,27 +535,25 @@ def migrate(db_path: str) -> None:
         conn.execute(ddl)
         logger.debug(f"  Node table: {table_name}")
 
+    # 2. Rel DDL — same semantics as node DDL.
     for ddl in _REL_TABLES:
         table_name = ddl.split("TABLE IF NOT EXISTS")[1].split("(")[0].strip()
         conn.execute(ddl)
         logger.debug(f"  Rel table: {table_name}")
 
-    # BUC-1603: backfill file_path / line_start / col_start on CALLS for
-    # DBs that were created before this migration ran.  Each ALTER is
-    # independent — a failure on one column should not prevent the next
-    # from being tried.  Idempotent "already exists" errors are swallowed.
+    # 3a. Node-table backfill ALTERs (BUC-1621).  Runs unconditionally; each
+    #     ALTER is independent — a failure on one column should not prevent
+    #     the next from being tried.  Idempotent "already exists" errors
+    #     are swallowed.
+    for alter_ddl in _NODE_ALTERS:
+        _run_alter(conn, alter_ddl, kind="NODE")
+
+    # 3b. Rel-table backfill ALTERs (BUC-1603 + BUC-1609).  Same contract.
     for alter_ddl in _REL_ALTERS:
-        try:
-            conn.execute(alter_ddl)
-            logger.debug(f"  Applied ALTER: {alter_ddl}")
-        except Exception as e:
-            err_str = str(e).lower()
-            if any(s in err_str for s in _ALTER_IDEMPOTENT_SUBSTRINGS):
-                logger.debug(f"  ALTER skipped (column already present): {alter_ddl}")
-            else:
-                # Hard fail: do not silently swallow a schema migration
-                # error that isn't the idempotent already-exists case.
-                logger.error(f"  ALTER failed: {alter_ddl}: {e}")
-                raise
+        _run_alter(conn, alter_ddl, kind="REL")
+
+    # 4. Audit — log present/absent state of every expected table so drift
+    #    between the declared list and the on-disk DB is visible in logs.
+    _audit_schema(conn)
 
     logger.info("LadybugDB schema migration complete ✓")
