@@ -889,10 +889,130 @@ class ImportProcessor:
 
     def _parse_rust_use_declaration(self, use_node: Node, module_qn: str) -> None:
         imports = rs_utils.extract_use_imports(use_node)
+        # (H) BUC-1618: `pub use` (any visibility) re-exports the symbol through
+        # (H) the current module. Detect the visibility_modifier child whose
+        # (H) leading keyword is `pub` — this also covers `pub(crate) use`,
+        # (H) `pub(super) use`, etc.; for re-export topology we don't care
+        # (H) about the restriction, only that the consumer can reach through.
+        is_pub_reexport = self._rust_use_is_pub(use_node)
 
         for imported_name, full_path in imports.items():
             self.import_mapping[module_qn][imported_name] = full_path
             logger.debug(ls.IMP_RUST, name=imported_name, path=full_path)
+
+            if not is_pub_reexport:
+                continue
+
+            # (H) BUC-1618: register the re-export under the dotted,
+            # (H) project-qualified target qn the chain walker expects.
+            # (H) Wildcard sentinels (key prefixed with `*`, value = target
+            # (H) module) are mirrored from the import_mapping form so the
+            # (H) BUC-1617 consumer-side wildcard walker engages unchanged.
+            if imported_name.startswith(cs.RS_WILDCARD_PREFIX):
+                # full_path here is the wildcard base (e.g. "crate::sub").
+                target_module = self._resolve_rust_full_path_qn(full_path, module_qn)
+                if not target_module or target_module == module_qn:
+                    continue
+                # Re-keying to *<dotted_module> matches the form Python /
+                # TS register so _walk_reexport's wildcard branch lights up.
+                wildcard_key = f"{cs.RS_WILDCARD_PREFIX}{target_module}"
+                self.re_export_mapping[module_qn][wildcard_key] = target_module
+                logger.debug(
+                    ls.IMP_RUST_PUB_USE,
+                    name=wildcard_key,
+                    target=target_module,
+                    kind="wildcard",
+                )
+                logger.debug(
+                    ls.IMP_REEXPORT_REGISTERED,
+                    module=module_qn,
+                    exported=wildcard_key,
+                    target=target_module,
+                )
+                continue
+
+            # Named re-export: convert "crate::sub::Foo" to
+            # "<crate_root>.<sub>.Foo".  Skip non-local (extern crate / std)
+            # paths — those can't be chained into a project symbol.
+            target_qn = self._resolve_rust_full_path_qn(full_path, module_qn)
+            if not target_qn:
+                continue
+            self.re_export_mapping[module_qn][imported_name] = target_qn
+            logger.debug(
+                ls.IMP_RUST_PUB_USE,
+                name=imported_name,
+                target=target_qn,
+                kind="named",
+            )
+            logger.debug(
+                ls.IMP_REEXPORT_REGISTERED,
+                module=module_qn,
+                exported=imported_name,
+                target=target_qn,
+            )
+
+    @staticmethod
+    def _rust_use_is_pub(use_node: Node) -> bool:
+        """Return True iff this ``use`` carries any ``pub`` visibility.
+
+        The tree-sitter-rust grammar wraps visibility in a
+        ``visibility_modifier`` child whose first token is always ``pub``
+        (with optional ``(crate)`` / ``(super)`` / ``(in path)``
+        restriction).  For re-export topology we treat all of these
+        equivalently — what matters is that the symbol can be reached
+        through the re-exporter, not the scope of the restriction.
+        """
+        for child in use_node.children:
+            if child.type == cs.TS_RS_VISIBILITY_MODIFIER:
+                for grandchild in child.children:
+                    if grandchild.type == cs.RS_KEYWORD_PUB:
+                        return True
+                # Fallback: some grammar versions inline the `pub` token as
+                # text rather than as a dedicated child.
+                text = safe_decode_text(child) or ""
+                if text.startswith(cs.RS_KEYWORD_PUB):
+                    return True
+        return False
+
+    def _resolve_rust_full_path_qn(
+        self, rust_path: str, module_qn: str
+    ) -> str | None:
+        """Resolve a ``crate::a::b::Foo`` style path to a dotted project qn.
+
+        Returns ``None`` for non-local paths (``std::``, extern crate
+        absolute paths, bare external identifiers) — those can't be
+        chained into a project symbol via re-export.
+
+        Unlike :meth:`_resolve_rust_import_path`, which only resolves the
+        first module segment, this walks every segment so the chain
+        walker can split the final ``module.symbol`` pair correctly.
+        """
+        if not rust_path:
+            return None
+        if not self._is_local_rust_import(rust_path):
+            return None
+
+        path_without_crate = rust_path[len(cs.RUST_CRATE_PREFIX) :]
+        if not path_without_crate:
+            return None
+
+        module_parts = module_qn.split(cs.SEPARATOR_DOT)
+        try:
+            src_index = module_parts.index(cs.LANG_SRC_DIR)
+            crate_root_qn = cs.SEPARATOR_DOT.join(module_parts[: src_index + 1])
+        except ValueError:
+            crate_root_qn = self.project_name
+
+        # Replace `::` with `.` so the chain walker's rsplit(".", 1) lands
+        # on (module, symbol).  Filter empties from trailing `::`.
+        dotted_parts = [
+            part
+            for part in path_without_crate.split(cs.SEPARATOR_DOUBLE_COLON)
+            if part
+        ]
+        if not dotted_parts:
+            return None
+        return cs.SEPARATOR_DOT.join([crate_root_qn, *dotted_parts])
 
     def _parse_go_imports(self, captures: dict, module_qn: str) -> None:
         for import_node in captures.get(cs.CAPTURE_IMPORT, []):

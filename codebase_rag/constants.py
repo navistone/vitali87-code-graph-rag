@@ -2416,6 +2416,10 @@ TS_RS_MACRO_INVOCATION = "macro_invocation"
 TS_RS_ATTRIBUTE_ITEM = "attribute_item"
 TS_RS_INNER_ATTRIBUTE_ITEM = "inner_attribute_item"
 
+# (H) Rust visibility — BUC-1618: detect `pub use` for re-exports
+TS_RS_VISIBILITY_MODIFIER = "visibility_modifier"
+RS_KEYWORD_PUB = "pub"
+
 # (H) Rust identifier tuples
 RS_IDENTIFIER_TYPES = (TS_IDENTIFIER, TS_TYPE_IDENTIFIER)
 RS_SCOPED_TYPES = (TS_SCOPED_IDENTIFIER, TS_RS_SCOPED_TYPE_IDENTIFIER)
