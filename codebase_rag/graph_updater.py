@@ -716,11 +716,39 @@ class GraphUpdater:
         self.factory.structure_processor.process_generic_file(filepath, filepath.name)
 
     def _process_function_calls(self) -> None:
+        # BUC-1614: optionally parallelise Pass 3 (call resolution).
+        # Profiling showed Pass 3 dominates Pass 2 by 35–55 % on Python
+        # repos, so this is where threading buys the most wall-clock.
+        # PARSE_PARALLELISM=1 keeps the legacy serial path verbatim;
+        # any value >= 2 routes through the worker-pool implementation
+        # in ``parsers.parallel_calls``.
+        from .parsers.parallel_calls import (
+            get_parse_parallelism,
+            process_calls_parallel,
+        )
+
         ast_cache_items = list(self.ast_cache.items())
-        for file_path, (root_node, language) in ast_cache_items:
-            self.factory.call_processor.process_calls_in_file(
-                file_path, root_node, language, self.queries
-            )
+        workers = get_parse_parallelism()
+
+        if workers <= 1 or len(ast_cache_items) < 2:
+            for file_path, (root_node, language) in ast_cache_items:
+                self.factory.call_processor.process_calls_in_file(
+                    file_path, root_node, language, self.queries
+                )
+            return
+
+        logger.info(
+            "Pass 3 parallel: {n} files across {w} workers (PARSE_PARALLELISM)",
+            n=len(ast_cache_items),
+            w=workers,
+        )
+        process_calls_parallel(
+            factory=self.factory,
+            ast_cache_items=ast_cache_items,
+            queries=self.queries,
+            target_ingestor=self.ingestor,
+            workers=workers,
+        )
 
     def _discover_method_rebindings(self) -> None:
         """BUC-1611: scan every Python AST for module-level monkey-patches.
