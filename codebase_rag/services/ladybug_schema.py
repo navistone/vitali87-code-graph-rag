@@ -99,6 +99,7 @@ _NODE_TABLES: list[str] = [
         is_exported BOOL,
         is_async BOOL DEFAULT FALSE,
         is_generator BOOL DEFAULT FALSE,
+        contextual_prefix STRING DEFAULT '',
         PRIMARY KEY (qualified_name)
     )""",
     """CREATE NODE TABLE IF NOT EXISTS Method(
@@ -112,6 +113,7 @@ _NODE_TABLES: list[str] = [
         is_exported BOOL,
         is_async BOOL DEFAULT FALSE,
         is_generator BOOL DEFAULT FALSE,
+        contextual_prefix STRING DEFAULT '',
         PRIMARY KEY (qualified_name)
     )""",
     # Interface / Enum mirror Class's shape — C# emits the full property
@@ -334,6 +336,13 @@ _NODE_ALTERS: list[str] = [
     "ALTER TABLE Function ADD is_generator BOOL DEFAULT FALSE",
     "ALTER TABLE Method ADD is_async BOOL DEFAULT FALSE",
     "ALTER TABLE Method ADD is_generator BOOL DEFAULT FALSE",
+    # Anthropic Contextual Retrieval — 50-100 token LLM-generated summary
+    # prepended to chunk text before embedding.  DEFAULT '' so legacy rows
+    # surface as empty (no behaviour change unless CONTEXTUAL_RETRIEVAL_ENABLED
+    # is set and the repo is re-indexed).  See
+    # ``codebase_rag/services/contextual_prefix.py``.
+    "ALTER TABLE Function ADD contextual_prefix STRING DEFAULT ''",
+    "ALTER TABLE Method ADD contextual_prefix STRING DEFAULT ''",
 ]
 
 # ---------------------------------------------------------------------------

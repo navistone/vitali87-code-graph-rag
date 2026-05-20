@@ -882,11 +882,84 @@ class GraphUpdater:
                     continue
 
                 embed_text = self._build_embed_text(source_code, docstring)
-                eligible.append((node_id, qualified_name, embed_text))
+                # Carry file_path through to Pass 1.5 so the contextual prefix
+                # generator can address the file by its repo-relative path.
+                # Pass 2 unpacks (node_id, qname, text) — the extra column is
+                # stripped before that hand-off.
+                eligible.append((node_id, qualified_name, embed_text, file_path))  # type: ignore[arg-type]
 
             if not eligible:
                 logger.info(ls.NO_FUNCTIONS_FOR_EMBEDDING)
                 return
+
+            # ------------------------------------------------------------------
+            # Pass 1.5 — Anthropic Contextual Retrieval.
+            #
+            # Prepend a 50-100 token LLM-generated "how this chunk relates to
+            # its file + project" summary to each embed_text.  Cached per
+            # (file_hash, qualified_name) so re-indexing is cheap.  Fail-open:
+            # any LLM or cache problem degrades to ``[from <path>]`` — the
+            # embedding pass continues either way.  Disabled by default; flip
+            # CONTEXTUAL_RETRIEVAL_ENABLED=true to opt in (incurs a one-time
+            # re-index cost of ~$100 per 100k chunks via Haiku 3.5).
+            # ------------------------------------------------------------------
+            try:
+                import hashlib as _cprefix_hl
+
+                from .services.contextual_prefix import ContextualPrefixGenerator
+
+                _cprefix_gen = ContextualPrefixGenerator()
+                # Group eligible rows by file so we can compute a stable
+                # per-file content hash + assemble a sibling list (used by
+                # the prompt for cross-chunk context).
+                _by_file: dict[str, list[tuple[str, str, str, str]]] = {}
+                for _row in eligible:
+                    _by_file.setdefault(_row[3], []).append(_row)  # type: ignore[index]
+
+                _prefixed: list[tuple[str, str, str]] = []
+                for _fpath, _rows in _by_file.items():
+                    _hasher = _cprefix_hl.sha256()
+                    for _r in _rows:
+                        _hasher.update(_r[2].encode("utf-8", errors="replace"))
+                    _file_hash = _hasher.hexdigest()
+                    _siblings = [_r[2][:800] for _r in _rows]
+
+                    for _node_id, _qname, _embed_text, _ in _rows:
+                        try:
+                            _prefix = _cprefix_gen.generate(
+                                file_path=_fpath,
+                                qualified_name=_qname,
+                                chunk_text=_embed_text,
+                                file_hash=_file_hash,
+                                sibling_chunks=[
+                                    _s for _s in _siblings if _s != _embed_text[:800]
+                                ],
+                            )
+                        except Exception as _e:  # generate() shouldn't raise
+                            logger.debug(
+                                "contextual_prefix.unexpected_error qname={} error={}",
+                                _qname,
+                                _e,
+                            )
+                            _prefix = ContextualPrefixGenerator.fallback_prefix(_fpath)
+                        _prefixed.append((_node_id, _qname, f"{_prefix}\n\n{_embed_text}"))
+
+                logger.info(
+                    "contextual_retrieval.applied enabled={} chunks={} stats={}",
+                    _cprefix_gen.config.enabled,
+                    len(_prefixed),
+                    _cprefix_gen.stats,
+                )
+                eligible = _prefixed  # type: ignore[assignment]
+            except Exception as _e:
+                # Last-ditch safety net — if the whole pass blows up, fall
+                # back to the original eligible list (strip the file_path
+                # column so Pass 2 unpacking stays valid).
+                logger.warning(
+                    "contextual_retrieval.pass_failed error={} — continuing without prefixes",
+                    _e,
+                )
+                eligible = [(_r[0], _r[1], _r[2]) for _r in eligible]  # type: ignore[assignment,index]
 
             # ------------------------------------------------------------------
             # Pass 2 — embed.  Prefer LM Studio batched HTTP when available;
