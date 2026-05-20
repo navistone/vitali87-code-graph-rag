@@ -78,6 +78,14 @@ HELP_INTERACTIVE_SETUP = (
     "Show interactive prompt to select which detected directories to keep. "
     "Without this flag, all directories matching ignore patterns are automatically excluded."
 )
+HELP_CONTEXTUAL_RETRIEVAL = (
+    "Enable Anthropic Contextual Retrieval — prepend a 50-100 token "
+    "LLM-generated summary to each chunk before embedding. Reported to "
+    "reduce retrieval failures by ~67%. Sets CONTEXTUAL_RETRIEVAL_ENABLED=true "
+    "for this run only. Triggers a one-time re-index cost of roughly "
+    "~$100 per 100k chunks via Claude Haiku 3.5. Requires "
+    "ANTHROPIC_API_KEY. See docs/CONTEXTUAL_RETRIEVAL.md."
+)
 
 CLI_COMMANDS: dict[CLICommandName, str] = {
     CLICommandName.START: CMD_START,

@@ -129,6 +129,7 @@ An accurate Retrieval-Augmented Generation (RAG) system that analyzes multi-lang
 - **🔗 Dependency Analysis**: Parses `pyproject.toml` to understand external dependencies
 - **🎯 Nested Function Support**: Handles complex nested functions and class hierarchies
 - **🔄 Language-Agnostic Design**: Unified graph schema across all supported languages
+- **🎯 Contextual Retrieval (opt-in)**: Anthropic's technique for ~67% retrieval-failure reduction — a cheap LLM (Haiku 3.5) prepends a 50-100 token "how this chunk relates to its file + project" summary before embedding. Disk-cached, fail-open, behind `--contextual-retrieval`. See [`docs/CONTEXTUAL_RETRIEVAL.md`](docs/CONTEXTUAL_RETRIEVAL.md).
 
 ## 🏗️ Architecture
 

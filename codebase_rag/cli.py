@@ -222,7 +222,28 @@ def index(
         "--interactive-setup",
         help=ch.HELP_INTERACTIVE_SETUP,
     ),
+    contextual_retrieval: bool = typer.Option(
+        False,
+        "--contextual-retrieval",
+        help=ch.HELP_CONTEXTUAL_RETRIEVAL,
+    ),
 ) -> None:
+    if contextual_retrieval:
+        # Opt-in flag flips the env var for this process only.  Must happen
+        # before any downstream code (ContextualPrefixGenerator) reads the
+        # environment.
+        import os as _os
+
+        _os.environ["CONTEXTUAL_RETRIEVAL_ENABLED"] = "true"
+        _info(
+            style(
+                "Contextual Retrieval ENABLED — chunks will be LLM-summarised "
+                "before embedding (Haiku 3.5). One-time re-index cost: "
+                "~$100 per 100k chunks (Haiku 3.5).",
+                cs.Color.CYAN,
+            )
+        )
+
     target_repo_path = repo_path or settings.TARGET_REPO_PATH
     repo_to_index = Path(target_repo_path)
     _info(style(cs.CLI_MSG_INDEXING_AT.format(path=repo_to_index), cs.Color.GREEN))
