@@ -57,10 +57,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     # Upper-bound at <1.0 because the current transformers release
     # (4.57.x) imports `huggingface_hub.utils.HfHubHTTPError` from a
-    # legacy submodule that hub 1.x removed; bumping past 1.0 breaks
-    # `from transformers import …` at import time.  Re-evaluate when
-    # transformers ships a release that declares hub 1.x compatibility.
-    "huggingface-hub[hf-xet]>=0.36.0,<1.0",
+    "huggingface-hub[hf-xet]>=1.5.0,<2.0",
     "real-ladybug>=0.15.3",
 ]
 
