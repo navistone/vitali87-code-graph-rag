@@ -818,16 +818,19 @@ TS_LOCALS_PATTERN = """
 IGNORE_PATTERNS = frozenset(
     {
         ".cache",
+        ".cgr",  # code-graph-rag sidecar dir (per-repo DB / clones)
         ".claude",
         ".eclipse",
         ".eggs",
         ".env",
+        ".forge",  # TheForge local-only artifacts (DB, session secret, caches)
         ".git",
         ".gradle",
         ".hg",
         ".idea",
         ".maven",
         ".mypy_cache",
+        ".next",  # Next.js build output
         ".nox",
         ".npm",
         ".nyc_output",
@@ -836,8 +839,10 @@ IGNORE_PATTERNS = frozenset(
         ".qdrant_code_embeddings",  # legacy Qdrant data dir — safe to skip if present
         ".ruff_cache",
         ".svn",
+        ".tantivy",  # Tantivy full-text index dir
         ".tmp",
         ".tox",
+        ".turbo",  # Turborepo cache
         ".venv",
         ".vs",
         ".vscode",
