@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 import time as _time
 from collections import OrderedDict, defaultdict
@@ -34,7 +35,7 @@ from .types_defs import (
 )
 from .utils.dependencies import has_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
-from .utils.path_utils import should_skip_path
+from .utils.path_utils import should_prune_dir, should_skip_path
 from .utils.source_extraction import extract_source_with_fallback
 
 type FileHashCache = dict[str, str]
@@ -533,26 +534,62 @@ class GraphUpdater:
             return []
 
         eligible: list[Path] = []
-        for filepath in self.repo_path.rglob("*"):
-            try:
-                if (
-                    filepath.is_file()
-                    and filepath.name not in _SIDECAR_CACHE_FILENAMES
-                    and not should_skip_path(
+        # Prune heavy / ignored directories AT TRAVERSAL TIME instead of
+        # walking the entire on-disk tree and rejecting per-file afterwards.
+        #
+        # The previous implementation used ``repo_path.rglob("*")``, which
+        # descends into and stats every entry — including ``node_modules``,
+        # ``.git``, and nested git worktrees under ``.claude/worktrees`` (each
+        # a full repo checkout with its own ``node_modules``). For a local
+        # working tree that can be tens of thousands of files / tens of GB of
+        # pure noise; merely enumerating them stalled the "discovering" phase
+        # long enough for the job watchdog to reap the job. (GitHub repos were
+        # unaffected because they index from a clean ``git clone`` with no
+        # node_modules / worktrees.)
+        #
+        # ``os.walk`` with in-place ``dirs[:]`` filtering lets us drop those
+        # subtrees before descending, so the scan cost is proportional to the
+        # indexed source tree rather than the whole working tree. The
+        # subsequent per-file ``should_skip_path`` check is retained as a
+        # backstop for file-level rules (suffix/basename excludes) the
+        # directory prune does not cover.
+        repo_path_str = str(self.repo_path)
+        for dirpath, dirnames, filenames in os.walk(
+            repo_path_str, topdown=True, followlinks=False
+        ):
+            dir_path = Path(dirpath)
+            # In-place prune: removing entries from ``dirnames`` stops os.walk
+            # from ever descending into them (topdown=True is required).
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not should_prune_dir(
+                    dir_path / d,
+                    self.repo_path,
+                    exclude_paths=self.exclude_paths,
+                    unignore_paths=self.unignore_paths,
+                )
+            ]
+            for name in filenames:
+                if name in _SIDECAR_CACHE_FILENAMES:
+                    continue
+                filepath = dir_path / name
+                try:
+                    if filepath.is_file() and not should_skip_path(
                         filepath,
                         self.repo_path,
                         exclude_paths=self.exclude_paths,
                         unignore_paths=self.unignore_paths,
+                    ):
+                        eligible.append(filepath)
+                except (UnicodeDecodeError, ValueError, OSError) as exc:
+                    # Filenames with non-UTF-8 bytes produce surrogate-escaped
+                    # Path objects on Linux; str() on them raises
+                    # UnicodeDecodeError. OSError can occur when the file
+                    # disappears mid-scan.
+                    logger.warning(
+                        "Skipping file with unreadable path during scan: %s", exc
                     )
-                ):
-                    eligible.append(filepath)
-            except (UnicodeDecodeError, ValueError, OSError) as exc:
-                # Filenames with non-UTF-8 bytes produce surrogate-escaped
-                # Path objects on Linux; str() on them raises UnicodeDecodeError.
-                # OSError can occur when the file disappears mid-scan.
-                logger.warning(
-                    "Skipping file with unreadable path during scan: %s", exc
-                )
         return eligible
 
     def _process_files(self, force: bool = False) -> None:
