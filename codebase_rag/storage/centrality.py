@@ -30,28 +30,40 @@ def compute_pagerank(repo_db_path: str) -> dict[str, float]:
     db = lb.Database(repo_db_path)
     conn = lb.Connection(db)
     try:
-        # Fetch all callable qualified names
-        node_res = conn.execute(
-            "MATCH (n) WHERE (n:Function OR n:Method) RETURN n.qualified_name AS qn"
-        )
+        # Fetch all callable qualified names.
+        #
+        # LadybugDB's Cypher parser rejects the predicate form
+        # ``MATCH (n) WHERE (n:Function OR n:Method)`` with a parse exception
+        # (it supports the label-union shorthand ``(n:Function|Method)`` but
+        # not a boolean OR over label tests — see
+        # ``codebase_rag/cypher_queries.py``). We therefore issue one MATCH
+        # per concrete label and merge the results in Python. This keeps the
+        # query set portable and is the contract exercised by the LE-32
+        # regression guard in code-indexer-service.
         nodes: list[str] = []
-        while node_res.has_next():
-            qn = node_res.get_next()[0]
-            if isinstance(qn, str):
-                nodes.append(qn)
+        for label in ("Function", "Method"):
+            node_res = conn.execute(
+                f"MATCH (n:{label}) RETURN n.qualified_name AS qn"
+            )
+            while node_res.has_next():
+                qn = node_res.get_next()[0]
+                if isinstance(qn, str):
+                    nodes.append(qn)
 
-        # Fetch all CALLS edges
-        edge_res = conn.execute(
-            """MATCH (s)-[:CALLS]->(t)
-               WHERE (s:Function OR s:Method) AND (t:Function OR t:Method)
-               RETURN s.qualified_name AS src, t.qualified_name AS dst"""
-        )
+        # Fetch all CALLS edges, one MATCH per (source-label, target-label)
+        # pair, for the same parser-compatibility reason as the node queries.
         edges: list[tuple[str, str]] = []
-        while edge_res.has_next():
-            row = edge_res.get_next()
-            src, dst = row[0], row[1]
-            if isinstance(src, str) and isinstance(dst, str):
-                edges.append((src, dst))
+        for src_label in ("Function", "Method"):
+            for dst_label in ("Function", "Method"):
+                edge_res = conn.execute(
+                    f"""MATCH (s:{src_label})-[:CALLS]->(t:{dst_label})
+                       RETURN s.qualified_name AS src, t.qualified_name AS dst"""
+                )
+                while edge_res.has_next():
+                    row = edge_res.get_next()
+                    src, dst = row[0], row[1]
+                    if isinstance(src, str) and isinstance(dst, str):
+                        edges.append((src, dst))
     finally:
         conn.close()
         del conn, db
