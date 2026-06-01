@@ -112,6 +112,15 @@ def _import_language_loaders() -> dict[cs.SupportedLanguage, LanguageLoader]:
             cs.LANG_ATTR_TYPESCRIPT,
             cs.SupportedLanguage.TS,
         ),
+        # TSX uses the tsx grammar from the same tree_sitter_typescript package.
+        # The plain "typescript" grammar does not parse JSX, so .tsx files must
+        # be dispatched here rather than to SupportedLanguage.TS.
+        LanguageImport(
+            cs.SupportedLanguage.TSX,
+            cs.TreeSitterModule.TSX,
+            cs.LANG_ATTR_TSX,
+            cs.SupportedLanguage.TSX,
+        ),
         LanguageImport(
             cs.SupportedLanguage.RUST,
             cs.TreeSitterModule.RUST,
@@ -181,6 +190,8 @@ def _get_locals_pattern(lang_name: cs.SupportedLanguage) -> str | None:
             return cs.JS_LOCALS_PATTERN
         case cs.SupportedLanguage.TS:
             return cs.TS_LOCALS_PATTERN
+        case cs.SupportedLanguage.TSX:
+            return cs.TSX_LOCALS_PATTERN
         case _:
             return None
 
