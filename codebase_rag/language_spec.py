@@ -133,6 +133,14 @@ TS_FQN_SPEC = FQNSpec(
     file_to_module_parts=_js_file_to_module,
 )
 
+# TSX uses the same FQN spec as TS: same scope/function node types, same naming rules
+TSX_FQN_SPEC = FQNSpec(
+    scope_node_types=frozenset(cs.FQN_TS_SCOPE_TYPES),
+    function_node_types=frozenset(cs.FQN_TS_FUNCTION_TYPES),
+    get_name=_js_get_name,
+    file_to_module_parts=_js_file_to_module,
+)
+
 RUST_FQN_SPEC = FQNSpec(
     scope_node_types=frozenset(cs.FQN_RS_SCOPE_TYPES),
     function_node_types=frozenset(cs.FQN_RS_FUNCTION_TYPES),
@@ -193,6 +201,7 @@ LANGUAGE_FQN_SPECS: dict[cs.SupportedLanguage, FQNSpec] = {
     cs.SupportedLanguage.PYTHON: PYTHON_FQN_SPEC,
     cs.SupportedLanguage.JS: JS_FQN_SPEC,
     cs.SupportedLanguage.TS: TS_FQN_SPEC,
+    cs.SupportedLanguage.TSX: TSX_FQN_SPEC,
     cs.SupportedLanguage.RUST: RUST_FQN_SPEC,
     cs.SupportedLanguage.JAVA: JAVA_FQN_SPEC,
     cs.SupportedLanguage.CPP: CPP_FQN_SPEC,
@@ -229,6 +238,26 @@ LANGUAGE_SPECS: dict[cs.SupportedLanguage, LanguageSpec] = {
     cs.SupportedLanguage.TS: LanguageSpec(
         language=cs.SupportedLanguage.TS,
         file_extensions=cs.TS_EXTENSIONS,
+        function_node_types=cs.JS_TS_FUNCTION_NODES + (cs.TS_FUNCTION_SIGNATURE,),
+        class_node_types=cs.JS_TS_CLASS_NODES
+        + (
+            cs.TS_ABSTRACT_CLASS_DECLARATION,
+            cs.TS_ENUM_DECLARATION,
+            cs.TS_INTERFACE_DECLARATION,
+            cs.TS_TYPE_ALIAS_DECLARATION,
+            cs.TS_INTERNAL_MODULE,
+        ),
+        module_node_types=cs.SPEC_JS_MODULE_TYPES,
+        call_node_types=cs.SPEC_JS_CALL_TYPES,
+        import_node_types=cs.JS_TS_IMPORT_NODES,
+        import_from_node_types=cs.JS_TS_IMPORT_NODES,
+    ),
+    # TSX: same AST node types as TS but uses the tsx grammar (language_tsx) which
+    # handles JSX syntax.  .tsx files MUST be parsed with this grammar — the plain
+    # typescript grammar fails on JSX, producing zero call/import edges.
+    cs.SupportedLanguage.TSX: LanguageSpec(
+        language=cs.SupportedLanguage.TSX,
+        file_extensions=cs.TSX_EXTENSIONS,
         function_node_types=cs.JS_TS_FUNCTION_NODES + (cs.TS_FUNCTION_SIGNATURE,),
         class_node_types=cs.JS_TS_CLASS_NODES
         + (

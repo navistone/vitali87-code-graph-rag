@@ -96,7 +96,8 @@ EXT_LUA = ".lua"
 # (H) File extension tuples by language
 PY_EXTENSIONS = (EXT_PY,)
 JS_EXTENSIONS = (EXT_JS, EXT_JSX)
-TS_EXTENSIONS = (EXT_TS, EXT_TSX)
+TS_EXTENSIONS = (EXT_TS,)
+TSX_EXTENSIONS = (EXT_TSX,)
 RS_EXTENSIONS = (EXT_RS,)
 GO_EXTENSIONS = (EXT_GO,)
 SCALA_EXTENSIONS = (EXT_SCALA, EXT_SC)
@@ -464,6 +465,7 @@ class SupportedLanguage(StrEnum):
     PYTHON = "python"
     JS = "javascript"
     TS = "typescript"
+    TSX = "tsx"
     RUST = "rust"
     GO = "go"
     SCALA = "scala"
@@ -500,6 +502,11 @@ LANGUAGE_METADATA: dict[SupportedLanguage, LanguageMetadata] = {
         LanguageStatus.FULL,
         "Interfaces, type aliases, enums, namespaces, ES6/CommonJS modules",
         "TypeScript",
+    ),
+    SupportedLanguage.TSX: LanguageMetadata(
+        LanguageStatus.FULL,
+        "React/JSX components, hooks, interfaces, type aliases, ES6/CommonJS modules",
+        "TypeScript (TSX)",
     ),
     SupportedLanguage.CPP: LanguageMetadata(
         LanguageStatus.FULL,
@@ -596,7 +603,7 @@ JS_TS_FUNCTION_NODES = (
 )
 JS_TS_CLASS_NODES = ("class_declaration", "class")
 JS_TS_IMPORT_NODES = ("import_statement", "lexical_declaration", "export_statement")
-JS_TS_LANGUAGES = frozenset({SupportedLanguage.JS, SupportedLanguage.TS})
+JS_TS_LANGUAGES = frozenset({SupportedLanguage.JS, SupportedLanguage.TS, SupportedLanguage.TSX})
 
 # (H) C++ import node types
 CPP_IMPORT_NODES = ("preproc_include", "template_function", "declaration")
@@ -756,12 +763,14 @@ BUILD_EXT_CMD = "build_ext"
 INPLACE_FLAG = "--inplace"
 LANG_ATTR_PREFIX = "language_"
 LANG_ATTR_TYPESCRIPT = "language_typescript"
+LANG_ATTR_TSX = "language_tsx"
 
 
 class TreeSitterModule(StrEnum):
     PYTHON = "tree_sitter_python"
     JS = "tree_sitter_javascript"
     TS = "tree_sitter_typescript"
+    TSX = "tree_sitter_typescript"
     RUST = "tree_sitter_rust"
     GO = "tree_sitter_go"
     SCALA = "tree_sitter_scala"
@@ -813,6 +822,9 @@ TS_LOCALS_PATTERN = """
 ; Variable references
 (identifier) @local.reference
 """
+
+# TSX uses the same locals pattern as TS (tsx grammar has the same node types)
+TSX_LOCALS_PATTERN = TS_LOCALS_PATTERN
 
 # (H) Patterns to detect at repo root and offer as exclude candidates (user selects which to exclude)
 IGNORE_PATTERNS = frozenset(
